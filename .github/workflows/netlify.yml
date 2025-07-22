@@ -1,0 +1,241 @@
+name: Netlify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.16.0
+  PNPM_VERSION: 11.9.0
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  validate:
+    name: Validate
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test Cloudflare/Sites build
+        run: pnpm test
+
+      - name: Test local production deployment
+        run: pnpm run test:prod
+        env:
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
+          NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST || 'https://eu.i.posthog.com' }}
+          NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
+          NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          INVITE_FROM_EMAIL: ${{ vars.INVITE_FROM_EMAIL }}
+
+  deploy:
+    name: Deploy to Netlify
+    needs: validate
+    # Manual runs are deploy-only. Pushes still require the validation job.
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'push' && needs.validate.result == 'success') ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-latest
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID || vars.NETLIFY_SITE_ID }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+      NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
+      NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
+      NEXT_PUBLIC_POSTHOG_KEY: ${{ vars.NEXT_PUBLIC_POSTHOG_KEY }}
+      NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST || 'https://eu.i.posthog.com' }}
+      NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
+      NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      INVITE_FROM_EMAIL: ${{ vars.INVITE_FROM_EMAIL }}
+    steps:
+      - name: Skip deploy until Netlify secrets exist
+        if: env.NETLIFY_AUTH_TOKEN == '' || env.NETLIFY_SITE_ID == ''
+        run: echo "Skipping Netlify deploy because NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID are not both configured."
+
+      - name: Checkout
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify production environment
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: |
+          set -euo pipefail
+
+          missing=0
+          require_env() {
+            local key="$1"
+            if [ -z "${!key:-}" ]; then
+              echo "::error title=Missing required GitHub Actions config::$key is empty. Add public browser config as Variables and private keys as Secrets under repository Settings > Secrets and variables > Actions."
+              missing=1
+            fi
+          }
+
+          reject_masked_env() {
+            local key="$1"
+            local value="${!key:-}"
+            if [[ "$value" == *"***"* ]]; then
+              echo "::error title=Masked value used as config::$key looks like a copied masked placeholder. Replace it with the real value."
+              missing=1
+            fi
+          }
+
+          require_url() {
+            local key="$1"
+            local value="${!key:-}"
+            if [ -z "$value" ]; then
+              return
+            fi
+
+            node -e '
+              try {
+                const parsed = new URL(process.argv[1]);
+                if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+                  process.exit(1);
+                }
+              } catch {
+                process.exit(1);
+              }
+            ' "$value" || {
+              echo "::error title=Invalid URL::$key must be a full HTTP or HTTPS URL."
+              missing=1
+            }
+          }
+
+          require_env NEXT_PUBLIC_SITE_URL
+          require_env NEXT_PUBLIC_SUPABASE_URL
+          require_env NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+          require_env SUPABASE_SERVICE_ROLE_KEY
+          require_env RESEND_API_KEY
+          require_env INVITE_FROM_EMAIL
+          reject_masked_env NEXT_PUBLIC_SITE_URL
+          reject_masked_env NEXT_PUBLIC_SUPABASE_URL
+          reject_masked_env NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+          reject_masked_env INVITE_FROM_EMAIL
+          require_url NEXT_PUBLIC_SITE_URL
+          require_url NEXT_PUBLIC_SUPABASE_URL
+
+          exit "$missing"
+
+      - name: Sync Netlify production environment
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: |
+          set -euo pipefail
+
+          netlify() {
+            pnpm --package=netlify-cli@27.0.0 dlx netlify "$@"
+          }
+
+          sync_env() {
+            local key="$1"
+            shift
+            local value="${!key:-}"
+
+            if [ -z "$value" ]; then
+              echo "::notice title=Skipped empty Netlify environment variable::$key was empty."
+              return
+            fi
+
+            netlify env:set "$key" "$value" \
+              --context production \
+              --force \
+              --site "$NETLIFY_SITE_ID" \
+              --auth "$NETLIFY_AUTH_TOKEN" \
+              "$@"
+          }
+
+          sync_public_env() {
+            local key="$1"
+            local value="${!key:-}"
+
+            if [ -z "$value" ]; then
+              echo "::notice title=Skipped empty Netlify environment variable::$key was empty."
+              return
+            fi
+
+            netlify env:unset "$key" \
+              --force \
+              --site "$NETLIFY_SITE_ID" \
+              --auth "$NETLIFY_AUTH_TOKEN" >/dev/null 2>&1 || true
+
+            sync_env "$key"
+          }
+
+          sync_public_env NEXT_PUBLIC_SITE_URL
+          sync_public_env NEXT_PUBLIC_SUPABASE_URL
+          sync_public_env NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+          sync_public_env NEXT_PUBLIC_ANALYTICS_ENDPOINT
+          sync_public_env NEXT_PUBLIC_ANALYTICS_DEBUG
+          sync_public_env NEXT_PUBLIC_POSTHOG_KEY
+          sync_public_env NEXT_PUBLIC_POSTHOG_HOST
+          sync_public_env NEXT_PUBLIC_EXPERIMENT_SALT
+          sync_public_env NEXT_PUBLIC_SIGNUP_ENDPOINT
+          sync_public_env INVITE_FROM_EMAIL
+          sync_env SUPABASE_SERVICE_ROLE_KEY --secret
+          sync_env RESEND_API_KEY --secret
+
+      - name: Deploy production
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: >
+          pnpm --package=netlify-cli@27.0.0 dlx netlify deploy
+          --prod
+          --context production
+          --site "$NETLIFY_SITE_ID"
+          --auth "$NETLIFY_AUTH_TOKEN"
+          --message "GitHub Actions deploy $GITHUB_SHA"

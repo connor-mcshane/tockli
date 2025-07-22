@@ -1,0 +1,46 @@
+import type { MetadataRoute } from "next";
+import { blogArticles, getSiteUrl } from "@/lib/marketing";
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const baseUrl = getSiteUrl();
+  const staticRoutes = [
+    {
+      path: "/",
+      priority: 1,
+    },
+    {
+      path: "/signup",
+      priority: 0.9,
+    },
+    {
+      path: "/login",
+      priority: 0.6,
+    },
+    {
+      path: "/blog",
+      priority: 0.7,
+    },
+    {
+      path: "/privacy",
+      priority: 0.3,
+    },
+    {
+      path: "/terms",
+      priority: 0.3,
+    },
+  ];
+
+  return [
+    ...staticRoutes.map((route) => ({
+      changeFrequency: "weekly" as const,
+      priority: route.priority,
+      url: `${baseUrl}${route.path}`,
+    })),
+    ...blogArticles.map((article) => ({
+      changeFrequency: "monthly" as const,
+      lastModified: new Date(`${article.publishedAt}T12:00:00Z`),
+      priority: 0.6,
+      url: `${baseUrl}/blog/${article.slug}`,
+    })),
+  ];
+}
