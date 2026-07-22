@@ -1,0 +1,295 @@
+create extension if not exists "pgcrypto";
+
+create type public.plan_tier as enum ('free', 'pro');
+create type public.project_kind as enum ('personal', 'team');
+create type public.project_role as enum ('owner', 'editor', 'viewer');
+create type public.task_status as enum ('todo', 'active', 'done');
+create type public.task_priority as enum ('low', 'medium', 'high');
+
+create table public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text,
+  display_name text,
+  avatar_url text,
+  plan public.plan_tier not null default 'free',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.projects (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null references public.profiles(id) on delete cascade,
+  name text not null,
+  kind public.project_kind not null default 'personal',
+  color text not null default '#ff005e',
+  daily_goal integer not null default 6 check (daily_goal between 1 and 16),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.project_members (
+  project_id uuid not null references public.projects(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  role public.project_role not null default 'editor',
+  created_at timestamptz not null default now(),
+  primary key (project_id, user_id)
+);
+
+create table public.tasks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  title text not null,
+  note text not null default '',
+  status public.task_status not null default 'todo',
+  priority public.task_priority not null default 'medium',
+  estimate_minutes integer not null default 25 check (estimate_minutes between 1 and 480),
+  spent_minutes integer not null default 0 check (spent_minutes >= 0),
+  due_label text,
+  sort_order integer not null default 0,
+  created_by uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.task_tags (
+  task_id uuid not null references public.tasks(id) on delete cascade,
+  label text not null,
+  primary key (task_id, label)
+);
+
+create table public.focus_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  project_id uuid not null references public.projects(id) on delete cascade,
+  task_id uuid references public.tasks(id) on delete set null,
+  minutes integer not null check (minutes between 1 and 480),
+  note text not null default '',
+  completed_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table public.user_settings (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  focus_minutes integer not null default 25 check (focus_minutes between 10 and 90),
+  break_minutes integer not null default 5 check (break_minutes between 3 and 30),
+  daily_pomodoro_goal integer not null default 6 check (daily_pomodoro_goal between 1 and 16),
+  working_days text[] not null default array['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+  strict_mode boolean not null default false,
+  updated_at timestamptz not null default now()
+);
+
+create index projects_owner_id_idx on public.projects(owner_id);
+create index project_members_user_id_idx on public.project_members(user_id);
+create index tasks_project_id_status_idx on public.tasks(project_id, status);
+create index focus_sessions_user_completed_idx on public.focus_sessions(user_id, completed_at desc);
+create index focus_sessions_project_completed_idx on public.focus_sessions(project_id, completed_at desc);
+
+create or replace function public.is_project_member(project_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.projects p
+    left join public.project_members pm
+      on pm.project_id = p.id
+     and pm.user_id = auth.uid()
+    where p.id = is_project_member.project_id
+      and (p.owner_id = auth.uid() or pm.user_id = auth.uid())
+  );
+$$;
+
+create or replace function public.current_user_project_role(project_id uuid)
+returns public.project_role
+language sql
+security definer
+set search_path = public
+as $$
+  select case
+    when p.owner_id = auth.uid() then 'owner'::public.project_role
+    else pm.role
+  end
+  from public.projects p
+  left join public.project_members pm
+    on pm.project_id = p.id
+   and pm.user_id = auth.uid()
+  where p.id = current_user_project_role.project_id
+  limit 1;
+$$;
+
+create or replace function public.enforce_free_team_project_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  owner_plan public.plan_tier;
+  existing_team_projects integer;
+begin
+  if new.kind <> 'team' then
+    return new;
+  end if;
+
+  select plan into owner_plan
+  from public.profiles
+  where id = new.owner_id;
+
+  if coalesce(owner_plan, 'free') = 'pro' then
+    return new;
+  end if;
+
+  select count(*) into existing_team_projects
+  from public.projects
+  where owner_id = new.owner_id
+    and kind = 'team'
+    and id <> coalesce(new.id, gen_random_uuid());
+
+  if existing_team_projects >= 1 then
+    raise exception 'Free accounts can own one shared project';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger projects_free_team_limit
+before insert or update of kind, owner_id on public.projects
+for each row execute function public.enforce_free_team_project_limit();
+
+create or replace function public.add_project_owner_member()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.project_members (project_id, user_id, role)
+  values (new.id, new.owner_id, 'owner')
+  on conflict (project_id, user_id) do update set role = 'owner';
+
+  return new;
+end;
+$$;
+
+create trigger projects_add_owner_member
+after insert on public.projects
+for each row execute function public.add_project_owner_member();
+
+alter table public.profiles enable row level security;
+alter table public.projects enable row level security;
+alter table public.project_members enable row level security;
+alter table public.tasks enable row level security;
+alter table public.task_tags enable row level security;
+alter table public.focus_sessions enable row level security;
+alter table public.user_settings enable row level security;
+
+create policy "Users read own profile"
+on public.profiles for select
+using (id = auth.uid());
+
+create policy "Users update own profile"
+on public.profiles for update
+using (id = auth.uid())
+with check (id = auth.uid());
+
+create policy "Users insert own profile"
+on public.profiles for insert
+with check (id = auth.uid());
+
+create policy "Project members read projects"
+on public.projects for select
+using (public.is_project_member(id));
+
+create policy "Users create owned projects"
+on public.projects for insert
+with check (owner_id = auth.uid());
+
+create policy "Owners update projects"
+on public.projects for update
+using (owner_id = auth.uid())
+with check (owner_id = auth.uid());
+
+create policy "Owners delete projects"
+on public.projects for delete
+using (owner_id = auth.uid());
+
+create policy "Members read memberships"
+on public.project_members for select
+using (public.is_project_member(project_id));
+
+create policy "Owners manage memberships"
+on public.project_members for all
+using (public.current_user_project_role(project_id) = 'owner')
+with check (public.current_user_project_role(project_id) = 'owner');
+
+create policy "Members read tasks"
+on public.tasks for select
+using (public.is_project_member(project_id));
+
+create policy "Editors create tasks"
+on public.tasks for insert
+with check (
+  created_by = auth.uid()
+  and public.current_user_project_role(project_id) in ('owner', 'editor')
+);
+
+create policy "Editors update tasks"
+on public.tasks for update
+using (public.current_user_project_role(project_id) in ('owner', 'editor'))
+with check (public.current_user_project_role(project_id) in ('owner', 'editor'));
+
+create policy "Editors delete tasks"
+on public.tasks for delete
+using (public.current_user_project_role(project_id) in ('owner', 'editor'));
+
+create policy "Members read tags"
+on public.task_tags for select
+using (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
+create policy "Editors manage tags"
+on public.task_tags for all
+using (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
+  )
+)
+with check (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
+  )
+);
+
+create policy "Users read own sessions"
+on public.focus_sessions for select
+using (user_id = auth.uid() or public.is_project_member(project_id));
+
+create policy "Users create own sessions"
+on public.focus_sessions for insert
+with check (user_id = auth.uid() and public.is_project_member(project_id));
+
+create policy "Users update own sessions"
+on public.focus_sessions for update
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
+
+create policy "Users delete own sessions"
+on public.focus_sessions for delete
+using (user_id = auth.uid());
+
+create policy "Users manage own settings"
+on public.user_settings for all
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
