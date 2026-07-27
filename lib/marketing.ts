@@ -1,13 +1,25 @@
+const fallbackSiteUrl = "https://tockli.app";
+
+function resolveSiteUrl(value: string | undefined) {
+  const candidate = value?.trim() || fallbackSiteUrl;
+
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return fallbackSiteUrl;
+  }
+}
+
 export const siteConfig = {
   name: "Tockli",
-  url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://tockli.app",
+  url: resolveSiteUrl(process.env.NEXT_PUBLIC_SITE_URL),
   description:
     "A calm focus timer with a task board, session notes, lightweight sharing, and practical analytics.",
   ogImage: "/og.png",
 };
 
 export function getSiteUrl() {
-  return siteConfig.url.replace(/\/$/, "");
+  return siteConfig.url;
 }
 
 export type BlogArticle = {
