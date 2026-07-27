@@ -95,6 +95,8 @@ wired into the app.
 ## Netlify Deployment
 
 This repo includes `netlify.toml` and `.github/workflows/netlify.yml`.
+Node is pinned to `22.16.0` in `.node-version` and `netlify.toml` so Netlify's
+Corepack can verify `pnpm@11.9.0`.
 
 GitHub Actions expects these repository secrets:
 

@@ -51,6 +51,10 @@ The repo includes `netlify.toml` with Netlify's typical Next.js settings:
   publish = ".next"
 ```
 
+Node is pinned to `22.16.0` in `.node-version` and `netlify.toml`. Keep that
+pin unless `pnpm@11.9.0` is changed, because older bundled Corepack versions can
+fail before dependency installation.
+
 GitHub Actions deploys production on pushes to `main` using Netlify CLI.
 
 Required GitHub repository secrets:

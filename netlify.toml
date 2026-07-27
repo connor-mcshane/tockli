@@ -3,7 +3,7 @@
   publish = ".next"
 
 [build.environment]
-  NODE_VERSION = "22.13.0"
+  NODE_VERSION = "22.16.0"
   PNPM_VERSION = "11.9.0"
   NEXT_TELEMETRY_DISABLED = "1"
 
