@@ -134,4 +134,5 @@ Cloudflare/Sites render smoke test, and the Netlify `next build` all pass.
 ## Deployment Prep
 
 See `docs/deployment-prep.md` for the deploy checklist, analytics event
-dictionary, A/B test notes, and runtime env requirements.
+dictionary, A/B test notes, and runtime env requirements. See
+`docs/auth-setup.md` for the exact Supabase and Google SSO settings.

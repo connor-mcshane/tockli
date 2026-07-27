@@ -17,6 +17,7 @@ import {
   Hash,
   ListChecks,
   LogIn,
+  LogOut,
   Menu,
   MessageSquare,
   MoreHorizontal,
@@ -37,9 +38,11 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
+import type { User } from "@supabase/supabase-js";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trackEvent } from "@/lib/analytics";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type View = "board" | "timer" | "analytics" | "settings";
 type ProjectKind = "personal" | "team";
@@ -161,6 +164,11 @@ const currentUser = {
   id: "current-user",
   name: "Connor McShane",
 };
+
+function readUserMetadata(user: User | null, key: string) {
+  const value = user?.user_metadata?.[key];
+  return typeof value === "string" ? value : "";
+}
 
 const initialProjects: Project[] = [
   {
@@ -666,6 +674,9 @@ function insertMarkdown(value: string, kind: "heading" | "bold" | "italic" | "li
 }
 
 export default function Home() {
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authMessage, setAuthMessage] = useState("");
   const [view, setView] = useState<View>("board");
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [categories, setCategories] = useState<TaskCategory[]>(initialCategories);
@@ -697,6 +708,61 @@ export default function Home() {
     oscillator?: OscillatorNode;
     source?: AudioBufferSourceNode;
   } | null>(null);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    let alive = true;
+
+    async function checkSession() {
+      const { data, error } = await supabase!.auth.getSession();
+
+      if (!alive) {
+        return;
+      }
+
+      if (error) {
+        setAuthMessage(error.message);
+        setAuthReady(true);
+        return;
+      }
+
+      if (!data.session) {
+        window.location.replace(
+          "/login?next=/app&message=Please%20log%20in%20to%20open%20Tockli.",
+        );
+        return;
+      }
+
+      setAuthUser(data.session.user);
+      setAuthReady(true);
+    }
+
+    void checkSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!alive) {
+        return;
+      }
+
+      if (!session) {
+        window.location.replace("/login?next=/app");
+        return;
+      }
+
+      setAuthUser(session.user);
+      setAuthReady(true);
+    });
+
+    return () => {
+      alive = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     trackEvent("page_view", { surface: "app" });
@@ -1527,6 +1593,65 @@ export default function Home() {
     ((sessionDurationMinutes * 60 - remainingSeconds) /
       (sessionDurationMinutes * 60)) *
     100;
+  const authDisplayName =
+    readUserMetadata(authUser, "display_name") ||
+    readUserMetadata(authUser, "full_name") ||
+    authUser?.email?.split("@")[0] ||
+    (isSupabaseConfigured ? "Tockli user" : "Demo user");
+  const authEmail = authUser?.email ?? "Local demo workspace";
+  const authInitial = authDisplayName.trim().charAt(0).toUpperCase() || "T";
+  const appUserId = authUser?.id ?? currentUser.id;
+  const appUserName = authDisplayName || currentUser.name;
+
+  async function signOut() {
+    trackEvent("cta_clicked", {
+      cta: "sign_out",
+      destination: "/login",
+      surface: "app_account",
+    });
+
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+
+    window.location.assign("/login");
+  }
+
+  if (!authReady) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5] px-4 text-[#1a1c1b]">
+        <section className="w-full max-w-sm rounded-lg border border-[#e8e8e6] bg-white p-6 text-center shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[#ff005e] text-white">
+            <TimerReset size={22} aria-hidden="true" />
+          </div>
+          <h1 className="mt-5 text-xl font-semibold">Checking your session</h1>
+          <p className="mt-2 text-sm leading-6 text-[#62605b]">
+            Tockli will open your workspace once login is confirmed.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (authMessage) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5] px-4 text-[#1a1c1b]">
+        <section className="w-full max-w-md rounded-lg border border-[#ffd3df] bg-white p-6 text-center shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[#fff0f5] text-[#b90042]">
+            <LogIn size={22} aria-hidden="true" />
+          </div>
+          <h1 className="mt-5 text-xl font-semibold">Login could not be verified</h1>
+          <p className="mt-2 text-sm leading-6 text-[#62605b]">{authMessage}</p>
+          <Link
+            className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+            href="/login?next=/app"
+          >
+            Return to login
+          </Link>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
@@ -1704,8 +1829,20 @@ export default function Home() {
                 >
                   <Bell size={17} aria-hidden="true" />
                 </button>
-                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-sm font-semibold text-white">
-                  C
+                <button
+                  aria-label="Sign out"
+                  title="Sign out"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] bg-white text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+                  type="button"
+                  onClick={signOut}
+                >
+                  <LogOut size={16} aria-hidden="true" />
+                </button>
+                <div
+                  className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-sm font-semibold text-white"
+                  title={authEmail}
+                >
+                  {authInitial}
                 </div>
               </div>
             </div>
@@ -1769,6 +1906,8 @@ export default function Home() {
                     key={selectedTask.id}
                     categories={activeProjectCategories}
                     columns={activeBoardColumns}
+                    currentUserId={appUserId}
+                    currentUserName={appUserName}
                     deleteDisabled={
                       isRunning && focusTaskId === selectedTask.id
                     }
@@ -1813,9 +1952,12 @@ export default function Home() {
             {view === "settings" ? (
               <SettingsView
                 activeProject={activeProject}
+                authDisplayName={authDisplayName}
+                authEmail={authEmail}
                 createProject={createProject}
                 onFocusMinutesChange={updateFocusMinutes}
                 onPreviewSound={previewFocusSound}
+                onSignOut={signOut}
                 settings={settings}
                 setSettings={setSettings}
                 teamProjectCount={teamProjectCount}
@@ -2913,6 +3055,8 @@ function TaskCard({
 function TaskDetailModal({
   categories,
   columns,
+  currentUserId,
+  currentUserName,
   deleteDisabled,
   onClose,
   onCreateCategory,
@@ -2922,6 +3066,8 @@ function TaskDetailModal({
 }: {
   categories: TaskCategory[];
   columns: BoardColumn[];
+  currentUserId: string;
+  currentUserName: string;
   deleteDisabled: boolean;
   onClose: () => void;
   onCreateCategory: (name: string, color: string) => string;
@@ -3018,8 +3164,8 @@ function TaskDetailModal({
         ...task.comments,
         {
           id: createId("comment"),
-          authorId: currentUser.id,
-          authorName: currentUser.name,
+          authorId: currentUserId,
+          authorName: currentUserName,
           body,
           createdAt: new Date().toISOString(),
         },
@@ -3419,7 +3565,7 @@ function TaskDetailModal({
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
                   style={{
                     backgroundColor:
-                      comment.authorId === currentUser.id
+                      comment.authorId === currentUserId
                         ? selectedCategory?.color ?? "#ff005e"
                         : "#2f6fed",
                   }}
@@ -4345,18 +4491,24 @@ function MetricCard({
 
 function SettingsView({
   activeProject,
+  authDisplayName,
+  authEmail,
   createProject,
   onFocusMinutesChange,
   onPreviewSound,
+  onSignOut,
   settings,
   setSettings,
   teamProjectCount,
   timerLocked,
 }: {
   activeProject?: Project;
+  authDisplayName: string;
+  authEmail: string;
   createProject: (kind: ProjectKind) => void;
   onFocusMinutesChange: (minutes: number) => void;
   onPreviewSound: (sound: FocusSound) => void;
+  onSignOut: () => void;
   settings: UserSettings;
   setSettings: (settings: UserSettings) => void;
   teamProjectCount: number;
@@ -4508,6 +4660,10 @@ function SettingsView({
 
         <Panel title="Account" icon={LogIn}>
           <div className="space-y-3 text-sm">
+            <div className="rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3">
+              <p className="font-semibold text-[#1a1c1b]">{authDisplayName}</p>
+              <p className="mt-1 truncate text-xs text-[#62605b]">{authEmail}</p>
+            </div>
             <div className="flex items-center justify-between rounded-md border border-[#e8e8e6] p-3">
               <span className="text-[#62605b]">Google sign-in</span>
               <span className="font-semibold text-[#25a565]">Ready</span>
@@ -4516,20 +4672,14 @@ function SettingsView({
               <span className="text-[#62605b]">Supabase backend</span>
               <span className="font-semibold text-[#25a565]">Ready</span>
             </div>
-            <Link
+            <button
               className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-              href="/login"
-              onClick={() =>
-                trackEvent("cta_clicked", {
-                  cta: "settings_login",
-                  destination: "/login",
-                  surface: "app_settings",
-                })
-              }
+              type="button"
+              onClick={onSignOut}
             >
-              <LogIn size={16} aria-hidden="true" />
-              Log in
-            </Link>
+              <LogOut size={16} aria-hidden="true" />
+              Sign out
+            </button>
             <Link
               className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition hover:bg-[#e00054]"
               href="/signup"
@@ -4542,7 +4692,7 @@ function SettingsView({
               }
             >
               <LogIn size={16} aria-hidden="true" />
-              Create account
+              Add another account
             </Link>
           </div>
         </Panel>

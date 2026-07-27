@@ -51,6 +51,8 @@ email or CRM collector later.
   `user_settings` rows for new Auth users.
 - Keep `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
   aligned between local, preview, and production environments.
+- Use `docs/auth-setup.md` for the exact Supabase redirect URLs and Google
+  OAuth client settings.
 
 ## Netlify and GitHub Actions
 

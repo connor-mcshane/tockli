@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Clock3, TimerReset } from "lucide-react";
+import { ArrowLeft, ArrowRight, Clock3, TimerReset } from "lucide-react";
 import Link from "next/link";
 import { getBlogArticle, blogArticles } from "@/lib/marketing";
 
@@ -70,49 +70,76 @@ export default async function BlogArticlePage({ params }: BlogArticlePageProps) 
         type="application/ld+json"
       />
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-3xl items-center justify-between">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
           <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>
             <span className="text-lg font-semibold">Tockli</span>
           </Link>
-          <Link
-            className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            href="/blog"
-          >
-            <ArrowLeft size={16} aria-hidden="true" />
-            Blog
-          </Link>
+          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
+            <Link className="transition hover:text-[#ff005e]" href="/">
+              Home
+            </Link>
+            <Link className="transition hover:text-[#ff005e]" href="/blog">
+              Blog
+            </Link>
+            <Link className="transition hover:text-[#ff005e]" href="/app">
+              Workspace
+            </Link>
+          </nav>
+          <div className="flex items-center gap-2">
+            <Link
+              className="hidden h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e] sm:flex"
+              href="/blog"
+            >
+              <ArrowLeft size={16} aria-hidden="true" />
+              Blog
+            </Link>
+            <Link
+              className="flex h-10 items-center gap-2 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+              href="/signup"
+            >
+              Get started
+              <ArrowRight size={16} aria-hidden="true" />
+            </Link>
+          </div>
         </div>
       </header>
 
-      <article className="mx-auto max-w-3xl px-4 py-14 md:px-8">
-        <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase text-[#6a6965]">
-          <span>{article.category}</span>
-          <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
-          <span className="flex items-center gap-1">
-            <Clock3 size={14} aria-hidden="true" />
-            {article.readMinutes} min read
-          </span>
-          <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
-          <time dateTime={article.publishedAt}>
-            {new Date(`${article.publishedAt}T12:00:00`).toLocaleDateString("en", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            })}
-          </time>
-        </div>
+      <article>
+        <section className="border-b border-[#e8e8e6] bg-white px-4 py-14 md:px-8">
+          <div className="mx-auto max-w-3xl">
+            <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase text-[#6a6965]">
+              <span>{article.category}</span>
+              <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
+              <span className="flex items-center gap-1">
+                <Clock3 size={14} aria-hidden="true" />
+                {article.readMinutes} min read
+              </span>
+              <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
+              <time dateTime={article.publishedAt}>
+                {new Date(`${article.publishedAt}T12:00:00`).toLocaleDateString(
+                  "en",
+                  {
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  },
+                )}
+              </time>
+            </div>
 
-        <h1 className="mt-5 text-4xl font-semibold leading-tight sm:text-5xl">
-          {article.title}
-        </h1>
-        <p className="mt-5 text-xl leading-8 text-[#62605b]">
-          {article.description}
-        </p>
+            <h1 className="mt-5 text-4xl font-semibold leading-tight sm:text-5xl">
+              {article.title}
+            </h1>
+            <p className="mt-5 text-xl leading-8 text-[#62605b]">
+              {article.description}
+            </p>
+          </div>
+        </section>
 
-        <div className="mt-10 space-y-10 border-t border-[#e8e8e6] pt-10">
+        <div className="mx-auto max-w-3xl space-y-10 px-4 py-12 md:px-8">
           {article.sections.map((section) => (
             <section key={section.heading}>
               <h2 className="text-2xl font-semibold">{section.heading}</h2>

@@ -8,5 +8,10 @@ const supabasePublishableKey =
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabasePublishableKey);
 
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl!, supabasePublishableKey!)
+  ? createClient(supabaseUrl!, supabasePublishableKey!, {
+      auth: {
+        detectSessionInUrl: false,
+        flowType: "pkce",
+      },
+    })
   : null;

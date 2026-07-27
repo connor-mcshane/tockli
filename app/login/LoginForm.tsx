@@ -16,22 +16,37 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type LoginStatus = "idle" | "submitting" | "success" | "error";
 
-function getAuthRedirect() {
-  return `${window.location.origin}/auth/callback?next=/app`;
+function getSafeNext(value: string | null) {
+  if (value?.startsWith("/") && !value.startsWith("//")) {
+    return value;
+  }
+
+  return "/app";
+}
+
+function getAuthRedirect(nextPath: string) {
+  return `${window.location.origin}/auth/callback?next=${encodeURIComponent(
+    nextPath,
+  )}`;
 }
 
 export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [nextPath, setNextPath] = useState("/app");
   const [status, setStatus] = useState<LoginStatus>("idle");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const messageParam = params.get("message");
-    if (messageParam) {
-      window.requestAnimationFrame(() => setMessage(messageParam));
-    }
+    const safeNext = getSafeNext(params.get("next"));
+    window.requestAnimationFrame(() => {
+      setNextPath(safeNext);
+      if (messageParam) {
+        setMessage(messageParam);
+      }
+    });
     trackEvent("page_view", { surface: "login" });
   }, []);
 
@@ -73,7 +88,7 @@ export default function LoginForm() {
     trackEvent("login_succeeded", { method: "email_password" });
     setStatus("success");
     setMessage("Signed in. Opening your workspace...");
-    window.setTimeout(() => window.location.assign("/app"), 500);
+    window.setTimeout(() => window.location.assign(nextPath), 500);
   }
 
   async function startGoogleLogin() {
@@ -92,7 +107,7 @@ export default function LoginForm() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: getAuthRedirect(),
+        redirectTo: getAuthRedirect(nextPath),
       },
     });
 
@@ -135,24 +150,32 @@ export default function LoginForm() {
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-5xl items-center justify-between">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
           <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>
             <span className="text-lg font-semibold">Tockli</span>
           </Link>
+          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
+            <Link className="transition hover:text-[#ff005e]" href="/blog">
+              Blog
+            </Link>
+            <Link className="transition hover:text-[#ff005e]" href="/app">
+              Workspace
+            </Link>
+          </nav>
           <Link
             className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
             href="/"
           >
             <ArrowLeft size={16} aria-hidden="true" />
-            Home
+            Landing
           </Link>
         </div>
       </header>
 
-      <section className="mx-auto grid min-h-[calc(100svh-4rem)] max-w-5xl items-center gap-8 px-4 py-10 md:px-8 lg:grid-cols-[minmax(0,0.9fr)_minmax(360px,420px)]">
+      <section className="mx-auto grid min-h-[calc(100svh-4rem)] max-w-7xl items-center gap-10 px-4 py-10 md:px-8 lg:grid-cols-[minmax(0,0.95fr)_minmax(400px,460px)]">
         <div>
           <p className="text-sm font-semibold uppercase text-[#b90042]">
             Welcome back
@@ -161,9 +184,26 @@ export default function LoginForm() {
             Log in and pick up your next focus block.
           </h1>
           <p className="mt-4 max-w-xl text-lg leading-8 text-[#62605b]">
-            Auth is handled by Supabase. The current workspace remains
-            local-first while hosted persistence is connected in the next pass.
+            Return to your task board, start the next timer, and keep momentum
+            without rebuilding the plan from scratch.
           </p>
+          <div className="mt-8 overflow-hidden rounded-lg border border-[#d8d7d3] bg-white shadow-[0_18px_60px_rgba(26,28,27,0.1)]">
+            <div className="border-b border-[#e8e8e6] bg-[#f4f4f2] px-4 py-3 text-xs font-semibold uppercase text-[#6a6965]">
+              Today in Tockli
+            </div>
+            <div className="grid gap-0 divide-y divide-[#e8e8e6] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+              {[
+                ["3", "focus sessions"],
+                ["72m", "protected time"],
+                ["5", "notes saved"],
+              ].map(([value, label]) => (
+                <div key={label} className="p-4">
+                  <div className="text-2xl font-semibold">{value}</div>
+                  <div className="mt-1 text-sm text-[#62605b]">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_14px_40px_rgba(26,28,27,0.08)]">

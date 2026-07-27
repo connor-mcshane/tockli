@@ -249,20 +249,28 @@ export default function SignupForm() {
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
           <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>
             <span className="text-lg font-semibold">Tockli</span>
           </Link>
+          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
+            <Link className="transition hover:text-[#ff005e]" href="/blog">
+              Blog
+            </Link>
+            <Link className="transition hover:text-[#ff005e]" href="/app">
+              Workspace
+            </Link>
+          </nav>
           <div className="flex items-center gap-2">
             <Link
               className="hidden h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e] sm:flex"
               href="/"
             >
               <ArrowLeft size={16} aria-hidden="true" />
-              Home
+              Landing
             </Link>
             <Link
               className="flex h-10 items-center gap-2 rounded-md bg-[#1a1c1b] px-4 text-sm font-semibold text-white transition hover:bg-[#343634]"
@@ -275,10 +283,10 @@ export default function SignupForm() {
         </div>
       </header>
 
-      <section className="mx-auto grid max-w-6xl gap-8 px-4 py-10 md:px-8 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:py-16">
-        <div className="order-2 overflow-hidden rounded-lg border border-[#e8e8e6] bg-white lg:order-1">
+      <section className="mx-auto grid max-w-7xl gap-10 px-4 py-10 md:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(400px,480px)] lg:py-16">
+        <div className="order-2 overflow-hidden rounded-lg border border-[#d8d7d3] bg-white shadow-[0_18px_60px_rgba(26,28,27,0.1)] lg:order-1">
           <Image
-            alt="Tockli task board preview."
+            alt="Tockli workspace with a task board, focus timer, notes, and progress."
             className="h-full min-h-80 w-full object-cover object-left-top"
             height={720}
             src="/tockli-preview.png"
@@ -294,9 +302,20 @@ export default function SignupForm() {
             Sign up for Tockli.
           </h1>
           <p className="mt-4 text-lg leading-8 text-[#62605b]">
-            Create an account for the hosted beta, and tell us how you want to
-            use the workspace so onboarding can stay focused.
+            Start with a focused workspace for your next task, then shape it
+            around the way you work.
           </p>
+          <div className="mt-6 grid gap-2 text-sm font-semibold text-[#4f4d49] sm:grid-cols-3 lg:grid-cols-1">
+            {["Task-first timer", "Session notes", "Small-team ready"].map((item) => (
+              <div
+                key={item}
+                className="flex items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 py-2"
+              >
+                <CheckCircle2 className="text-[#25a963]" size={16} aria-hidden="true" />
+                {item}
+              </div>
+            ))}
+          </div>
 
           <div className="mt-8 rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
             <button
@@ -305,7 +324,7 @@ export default function SignupForm() {
               onClick={startGoogleSignup}
             >
               <LogIn size={18} aria-hidden="true" />
-              Continue with Google
+              Sign up with Google
             </button>
 
             <div className="my-5 flex items-center gap-3 text-xs font-semibold uppercase text-[#8b8984]">
@@ -394,7 +413,7 @@ export default function SignupForm() {
                 disabled={status === "submitting"}
                 type="submit"
               >
-                {status === "submitting" ? "Creating..." : "Create account"}
+                {status === "submitting" ? "Creating account..." : "Create account"}
                 <ArrowRight size={17} aria-hidden="true" />
               </button>
             </form>

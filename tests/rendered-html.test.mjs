@@ -22,7 +22,7 @@ async function render(path = "/") {
   );
 }
 
-test("server-renders the Tockli app shell", async () => {
+test("server-renders the protected Tockli app gate", async () => {
   const response = await render("/app");
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -30,13 +30,8 @@ test("server-renders the Tockli app shell", async () => {
   const html = await response.text();
   assert.match(html, /<title>Tockli - Focus timer and task board<\/title>/i);
   assert.match(html, /Tockli/);
-  assert.match(html, /To do/);
-  assert.match(html, /Doing/);
-  assert.match(html, /Done/);
-  assert.match(html, /Add column/);
-  assert.match(html, /Open To do column menu/);
-  assert.match(html, /Focus Timer/);
-  assert.match(html, /1 shared project/);
+  assert.match(html, /Checking your session/);
+  assert.match(html, /open your workspace once login is confirmed/);
   assert.doesNotMatch(html, /Sprint Board/);
   assert.doesNotMatch(html, />Kanban</);
   assert.doesNotMatch(html, />Personal</);

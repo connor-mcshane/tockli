@@ -22,22 +22,22 @@ type LandingHeroVariant = (typeof landingHeroExperiment.variants)[number];
 const featureCards = [
   {
     title: "Task-first focus",
-    description: "Start the timer from a card so every session has a clear job.",
+    description: "Pick the card first, then protect the next block of work.",
     icon: FolderKanban,
   },
   {
-    title: "Session notes",
-    description: "Capture the useful context while the work is still fresh.",
+    title: "Clean session notes",
+    description: "Save the decision, link, or next step while the context is fresh.",
     icon: Clock3,
   },
   {
-    title: "Light sharing",
-    description: "Keep one shared project visible without bringing in heavy process.",
+    title: "Quiet sharing",
+    description: "Keep a small project visible without turning focus into status work.",
     icon: Users,
   },
   {
-    title: "Useful analytics",
-    description: "Review rhythm, completion, and recent notes before planning the next block.",
+    title: "Useful rhythm",
+    description: "See completion, minutes, and recent notes before planning what comes next.",
     icon: BarChart3,
   },
 ];
@@ -71,7 +71,7 @@ export default function LandingPageClient() {
 
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
-      <header className="sticky top-0 z-30 border-b border-[#e8e8e6] bg-white/90 px-4 backdrop-blur md:px-8">
+      <header className="sticky top-0 z-30 border-b border-[#e8e8e6] bg-white/[0.92] px-4 backdrop-blur md:px-8">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
           <Link
             className="flex items-center gap-3"
@@ -85,11 +85,14 @@ export default function LandingPageClient() {
           </Link>
 
           <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
+            <a className="transition hover:text-[#ff005e]" href="#features">
+              Features
+            </a>
             <Link className="transition hover:text-[#ff005e]" href="/blog">
               Blog
             </Link>
             <Link className="transition hover:text-[#ff005e]" href="/app">
-              Open app
+              Workspace
             </Link>
             <Link className="transition hover:text-[#ff005e]" href="/login">
               Log in
@@ -101,13 +104,13 @@ export default function LandingPageClient() {
             href="/signup"
             onClick={() => trackCta("header_signup", "/signup")}
           >
-            Join beta
+            Get started
             <ArrowRight size={16} aria-hidden="true" />
           </Link>
         </div>
       </header>
 
-      <section className="relative min-h-[78svh] overflow-hidden border-b border-[#e8e8e6]">
+      <section className="relative min-h-[82svh] overflow-hidden border-b border-[#e8e8e6]">
         <Image
           alt="Tockli task board with focus cards, project navigation, and daily focus progress."
           className="absolute inset-0 h-full w-full object-cover object-center"
@@ -116,21 +119,21 @@ export default function LandingPageClient() {
           sizes="100vw"
           src="/tockli-preview.png"
         />
-        <div className="absolute inset-0 bg-white/75" />
-        <div className="relative mx-auto flex min-h-[78svh] max-w-7xl items-center px-4 py-16 md:px-8">
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(247,247,245,0.96)_0%,rgba(247,247,245,0.9)_42%,rgba(247,247,245,0.48)_100%)]" />
+        <div className="relative mx-auto flex min-h-[82svh] max-w-7xl items-center px-4 py-16 md:px-8">
           <div className="max-w-3xl">
             <p className="text-sm font-semibold uppercase text-[#b90042]">
               {variant.eyebrow}
             </p>
-            <h1 className="mt-3 text-5xl font-semibold leading-[1.02] sm:text-6xl lg:text-7xl">
+            <h1 className="mt-3 text-5xl font-semibold leading-[1.02] text-[#111312] sm:text-6xl lg:text-7xl">
               Tockli
             </h1>
             <p className="mt-5 max-w-2xl text-3xl font-semibold leading-tight text-[#1a1c1b] sm:text-4xl">
               {variant.headline}
             </p>
-            <p className="mt-5 max-w-xl text-lg leading-8 text-[#4f4d49]">
-              A calm timer, task board, session notes, and lightweight sharing
-              in one focused workspace.
+            <p className="mt-5 max-w-xl text-lg leading-8 text-[#4f4d49] sm:text-xl">
+              Tockli brings your task board, focus timer, notes, and daily
+              rhythm into one calm workspace for deep work.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
@@ -146,8 +149,20 @@ export default function LandingPageClient() {
                 href="/app"
                 onClick={() => trackCta("hero_open_app", "/app")}
               >
-                Open app
+                Open workspace
               </Link>
+            </div>
+            <div className="mt-8 flex flex-wrap gap-2 text-sm font-semibold text-[#4f4d49]">
+              {["No noisy dashboards", "Notes tied to sessions", "Made for small focus loops"].map(
+                (item) => (
+                  <span
+                    key={item}
+                    className="rounded-md border border-[#e1e0dc] bg-white/80 px-3 py-2"
+                  >
+                    {item}
+                  </span>
+                ),
+              )}
             </div>
           </div>
         </div>
@@ -157,9 +172,9 @@ export default function LandingPageClient() {
         <div className="mx-auto grid max-w-7xl gap-4 md:grid-cols-4">
           {[
             ["25", "minute default focus block"],
-            ["1", "shared project on the free plan"],
-            ["7", "day rhythm view"],
-            ["0", "setup friction for local-first use"],
+            ["1", "shared project to start"],
+            ["7", "day rhythm snapshot"],
+            ["0", "extra tabs to run a session"],
           ].map(([value, label]) => (
             <div key={label} className="border-l-2 border-[#ff005e] pl-4">
               <div className="text-3xl font-semibold">{value}</div>
@@ -169,7 +184,7 @@ export default function LandingPageClient() {
         </div>
       </section>
 
-      <section className="px-4 py-16 md:px-8">
+      <section id="features" className="px-4 py-16 md:px-8">
         <div className="mx-auto max-w-7xl">
           <div className="max-w-2xl">
             <p className="text-sm font-semibold uppercase text-[#b90042]">
@@ -202,28 +217,61 @@ export default function LandingPageClient() {
         </div>
       </section>
 
-      <section className="border-y border-[#e8e8e6] bg-[#1a1c1b] px-4 py-16 text-white md:px-8">
+      <section className="border-y border-[#e8e8e6] bg-white px-4 py-16 md:px-8">
+        <div className="mx-auto max-w-7xl">
+          <div className="flex flex-wrap items-end justify-between gap-5">
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase text-[#b90042]">
+                Workspace preview
+              </p>
+              <h2 className="mt-2 text-3xl font-semibold sm:text-4xl">
+                Your plan and your timer stay on the same surface.
+              </h2>
+            </div>
+            <Link
+              className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+              href="/app"
+              onClick={() => trackCta("preview_open_app", "/app")}
+            >
+              Try the workspace
+              <ArrowRight size={16} aria-hidden="true" />
+            </Link>
+          </div>
+          <div className="mt-8 overflow-hidden rounded-lg border border-[#d8d7d3] bg-[#f7f7f5] shadow-[0_18px_60px_rgba(26,28,27,0.12)]">
+            <Image
+              alt="A Tockli workspace showing tasks, a focus timer, notes, and focus analytics."
+              className="h-auto w-full"
+              height={720}
+              sizes="(min-width: 1280px) 1152px, 100vw"
+              src="/tockli-preview.png"
+              width={1280}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-[#e8e8e6] bg-[#1a1c1b] px-4 py-16 text-white md:px-8">
         <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]">
           <div>
             <p className="text-sm font-semibold uppercase text-[#ff9cbd]">
-              Launch path
+              Designed to stay calm
             </p>
             <h2 className="mt-2 text-3xl font-semibold sm:text-4xl">
-              Ready for a measured beta.
+              Enough structure to focus. Not enough to become the work.
             </h2>
             <p className="mt-4 text-lg leading-8 text-[#d8d7d3]">
-              The app can ship with a working local-first MVP while signup,
-              analytics, SEO, and backend auth are wired in stages.
+              Use Tockli when you need a clear next block, a visible task, and
+              a short note that makes tomorrow easier.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {[
-              "Deployable worker build",
-              "Search metadata and sitemap",
-              "Signup intent capture",
-              "Event tracking hooks",
-              "Landing-page experiment",
-              "Blog article structure",
+              "Task board and timer together",
+              "Session notes with context",
+              "Small-team sharing path",
+              "Daily rhythm without clutter",
+              "Fast signup and login",
+              "Content built for discovery",
             ].map((item) => (
               <div key={item} className="flex items-center gap-3 text-sm">
                 <CheckCircle2 className="text-[#25d67c]" size={18} aria-hidden="true" />
@@ -242,6 +290,10 @@ export default function LandingPageClient() {
                 Field notes
               </p>
               <h2 className="mt-2 text-3xl font-semibold">Launch blog</h2>
+              <p className="mt-3 max-w-xl text-sm leading-6 text-[#62605b]">
+                Short articles on focus systems, async collaboration, and useful
+                measurement for deep work.
+              </p>
             </div>
             <Link
               className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
