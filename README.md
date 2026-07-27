@@ -40,6 +40,7 @@ The local site runs at `http://localhost:3000/`.
 pnpm run build
 pnpm run build:netlify
 pnpm test
+pnpm run test:prod
 pnpm run test:db
 pnpm run lint
 ```
@@ -78,6 +79,11 @@ pnpm run test:db
 `.env.local`. The local database uses `supabase/config.toml`, applies
 `supabase/migrations/20260722210000_initial_schema.sql`, and loads
 `supabase/seed.sql` on reset.
+
+For a deployment-shaped local check, run `pnpm run test:prod` after the local
+Supabase stack is running. It builds the Netlify production output, starts it on
+localhost, and smoke-tests the public pages, auth callback, protected app gate,
+and sitemap.
 
 For a hosted Supabase project, apply the migration in `supabase/migrations/`.
 The schema includes:

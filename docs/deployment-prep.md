@@ -144,19 +144,25 @@ support more.
 
 ## Pre-Deploy Validation
 
+Start and reset local Supabase before the DB-backed checks:
+
+```bash
+pnpm run db:start
+pnpm run db:reset
+```
+
 Run:
 
 ```bash
 pnpm run build
 pnpm run build:netlify
 pnpm test
+pnpm run test:prod
 pnpm run lint
 ```
 
-Run the local Supabase test only after Docker Desktop and Supabase are running:
+Run the local Supabase test after Docker Desktop and Supabase are running:
 
 ```bash
-pnpm run db:start
-pnpm run db:reset
 pnpm run test:db
 ```

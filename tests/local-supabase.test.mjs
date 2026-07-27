@@ -73,15 +73,16 @@ async function insertAuthUser(tx, id, email, name, plan = "free") {
       crypt('tockli-test', gen_salt('bf')),
       now(),
       '{"provider":"email","providers":["email"]}'::jsonb,
-      jsonb_build_object('name', ${name}::text),
+      jsonb_build_object('display_name', ${name}::text),
       now(),
       now()
     )
   `;
 
   await tx`
-    insert into public.profiles (id, email, display_name, plan)
-    values (${id}::uuid, ${email}::text, ${name}::text, ${plan}::public.plan_tier)
+    update public.profiles
+    set plan = ${plan}::public.plan_tier
+    where id = ${id}::uuid
   `;
 }
 
@@ -150,22 +151,33 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
     await insertAuthUser(tx, outsiderId, "outsider@tockli.test", "Outsider User");
   });
 
+  const bootstrappedProfiles = await sql`
+    select email, display_name
+    from public.profiles
+    where id in (${ownerId}, ${collaboratorId}, ${outsiderId})
+    order by email
+  `;
+  assert.deepEqual(
+    bootstrappedProfiles.map((profile) => profile.display_name),
+    ["Collaborator User", "Outsider User", "Owner User"],
+  );
+
+  const bootstrappedSettings = await sql`
+    select user_id
+    from public.user_settings
+    where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})
+  `;
+  assert.equal(bootstrappedSettings.length, 3);
+
   const [ownerSettings] = await withAuthenticatedUser(ownerId, async (tx) => {
     return tx`
-      insert into public.user_settings (
-        user_id,
-        focus_minutes,
-        daily_pomodoro_goal,
-        sound_enabled,
-        focus_sound
-      )
-      values (
-        ${ownerId},
-        5,
-        6,
-        true,
-        'ocean_waves'
-      )
+      update public.user_settings
+      set
+        focus_minutes = 5,
+        daily_pomodoro_goal = 6,
+        sound_enabled = true,
+        focus_sound = 'ocean_waves'
+      where user_id = ${ownerId}
       returning focus_minutes, daily_pomodoro_goal, focus_sound
     `;
   });
