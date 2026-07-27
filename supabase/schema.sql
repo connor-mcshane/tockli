@@ -3,8 +3,22 @@ create extension if not exists "pgcrypto";
 create type public.plan_tier as enum ('free', 'pro');
 create type public.project_kind as enum ('personal', 'team');
 create type public.project_role as enum ('owner', 'editor', 'viewer');
-create type public.task_status as enum ('todo', 'active', 'done');
 create type public.task_priority as enum ('low', 'medium', 'high');
+create type public.focus_sound as enum (
+  'brown_noise',
+  'rain',
+  'heavy_rain',
+  'ocean_waves',
+  'thunderstorm',
+  'pulse',
+  'clock_tick'
+);
+create type public.cancellation_reason as enum (
+  'interrupted',
+  'wrong_task',
+  'need_break',
+  'other'
+);
 
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -16,13 +30,34 @@ create table public.profiles (
   updated_at timestamptz not null default now()
 );
 
+create table public.marketing_signups (
+  id uuid primary key default gen_random_uuid(),
+  email text not null check (
+    length(email) between 3 and 254
+    and email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  ),
+  role text not null default 'Unknown' check (length(role) <= 80),
+  intent text not null default 'personal-focus' check (length(intent) <= 80),
+  source text not null default 'direct' check (length(source) <= 120),
+  experiment_id text check (experiment_id is null or length(experiment_id) <= 120),
+  experiment_variant text check (experiment_variant is null or length(experiment_variant) <= 80),
+  created_at timestamptz not null default now()
+);
+
 create table public.projects (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references public.profiles(id) on delete cascade,
   name text not null,
   kind public.project_kind not null default 'personal',
   color text not null default '#ff005e',
-  daily_goal integer not null default 6 check (daily_goal between 1 and 16),
+  board_columns jsonb not null default '[
+    {"id": "todo", "title": "To do"},
+    {"id": "active", "title": "Doing"},
+    {"id": "done", "title": "Done", "isDone": true}
+  ]'::jsonb check (
+    jsonb_typeof(board_columns) = 'array'
+    and jsonb_array_length(board_columns) > 0
+  ),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -35,12 +70,23 @@ create table public.project_members (
   primary key (project_id, user_id)
 );
 
+create table public.task_categories (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  name text not null,
+  color text not null default '#ff005e',
+  created_by uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table public.tasks (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references public.projects(id) on delete cascade,
+  category_id uuid references public.task_categories(id) on delete set null,
   title text not null,
   note text not null default '',
-  status public.task_status not null default 'todo',
+  status text not null default 'todo' check (length(status) between 1 and 120),
   priority public.task_priority not null default 'medium',
   estimate_minutes integer not null default 25 check (estimate_minutes between 1 and 480),
   spent_minutes integer not null default 0 check (spent_minutes >= 0),
@@ -57,6 +103,25 @@ create table public.task_tags (
   primary key (task_id, label)
 );
 
+create table public.task_subtasks (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references public.tasks(id) on delete cascade,
+  title text not null,
+  is_done boolean not null default false,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table public.task_comments (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references public.tasks(id) on delete cascade,
+  author_id uuid not null references public.profiles(id) on delete cascade,
+  body text not null check (length(trim(body)) > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table public.focus_sessions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete cascade,
@@ -68,21 +133,45 @@ create table public.focus_sessions (
   created_at timestamptz not null default now()
 );
 
+create table public.pomodoro_cancellations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  project_id uuid not null references public.projects(id) on delete cascade,
+  task_id uuid references public.tasks(id) on delete set null,
+  duration_minutes integer not null check (duration_minutes between 5 and 180),
+  elapsed_minutes integer not null check (
+    elapsed_minutes between 0 and duration_minutes
+  ),
+  reason public.cancellation_reason not null,
+  note text not null default '',
+  cancelled_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
 create table public.user_settings (
   user_id uuid primary key references public.profiles(id) on delete cascade,
-  focus_minutes integer not null default 25 check (focus_minutes between 10 and 90),
+  focus_minutes integer not null default 25 check (focus_minutes between 5 and 90),
   break_minutes integer not null default 5 check (break_minutes between 3 and 30),
   daily_pomodoro_goal integer not null default 6 check (daily_pomodoro_goal between 1 and 16),
   working_days text[] not null default array['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
   strict_mode boolean not null default false,
+  sound_enabled boolean not null default false,
+  focus_sound public.focus_sound not null default 'brown_noise',
+  show_next_up boolean not null default false,
   updated_at timestamptz not null default now()
 );
 
 create index projects_owner_id_idx on public.projects(owner_id);
+create unique index marketing_signups_email_lower_idx on public.marketing_signups (lower(email));
 create index project_members_user_id_idx on public.project_members(user_id);
+create index task_categories_project_id_idx on public.task_categories(project_id);
 create index tasks_project_id_status_idx on public.tasks(project_id, status);
+create index task_subtasks_task_id_idx on public.task_subtasks(task_id);
+create index task_comments_task_created_idx on public.task_comments(task_id, created_at);
 create index focus_sessions_user_completed_idx on public.focus_sessions(user_id, completed_at desc);
 create index focus_sessions_project_completed_idx on public.focus_sessions(project_id, completed_at desc);
+create index pomodoro_cancellations_user_cancelled_idx
+on public.pomodoro_cancellations(user_id, cancelled_at desc);
 
 create or replace function public.is_project_member(project_id uuid)
 returns boolean
@@ -117,6 +206,22 @@ as $$
    and pm.user_id = auth.uid()
   where p.id = current_user_project_role.project_id
   limit 1;
+$$;
+
+create or replace function public.shares_project_with(user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.project_members mine
+    join public.project_members theirs
+      on theirs.project_id = mine.project_id
+    where mine.user_id = auth.uid()
+      and theirs.user_id = shares_project_with.user_id
+  );
 $$;
 
 create or replace function public.enforce_free_team_project_limit()
@@ -179,11 +284,16 @@ after insert on public.projects
 for each row execute function public.add_project_owner_member();
 
 alter table public.profiles enable row level security;
+alter table public.marketing_signups enable row level security;
 alter table public.projects enable row level security;
 alter table public.project_members enable row level security;
+alter table public.task_categories enable row level security;
 alter table public.tasks enable row level security;
 alter table public.task_tags enable row level security;
+alter table public.task_subtasks enable row level security;
+alter table public.task_comments enable row level security;
 alter table public.focus_sessions enable row level security;
+alter table public.pomodoro_cancellations enable row level security;
 alter table public.user_settings enable row level security;
 
 create policy "Users read own profile"
@@ -198,6 +308,18 @@ with check (id = auth.uid());
 create policy "Users insert own profile"
 on public.profiles for insert
 with check (id = auth.uid());
+
+create policy "Anyone can join marketing signups"
+on public.marketing_signups for insert
+to anon, authenticated
+with check (
+  length(email) between 3 and 254
+  and email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+);
+
+create policy "Project members read collaborator profiles"
+on public.profiles for select
+using (public.shares_project_with(id));
 
 create policy "Project members read projects"
 on public.projects for select
@@ -224,6 +346,15 @@ create policy "Owners manage memberships"
 on public.project_members for all
 using (public.current_user_project_role(project_id) = 'owner')
 with check (public.current_user_project_role(project_id) = 'owner');
+
+create policy "Members read categories"
+on public.task_categories for select
+using (public.is_project_member(project_id));
+
+create policy "Editors manage categories"
+on public.task_categories for all
+using (public.current_user_project_role(project_id) in ('owner', 'editor'))
+with check (public.current_user_project_role(project_id) in ('owner', 'editor'));
 
 create policy "Members read tasks"
 on public.tasks for select
@@ -272,6 +403,84 @@ with check (
   )
 );
 
+create policy "Members read subtasks"
+on public.task_subtasks for select
+using (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
+create policy "Editors manage subtasks"
+on public.task_subtasks for all
+using (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
+  )
+)
+with check (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
+  )
+);
+
+create policy "Members read task comments"
+on public.task_comments for select
+using (
+  exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
+create policy "Members create own task comments"
+on public.task_comments for insert
+with check (
+  author_id = auth.uid()
+  and exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
+create policy "Authors update own task comments"
+on public.task_comments for update
+using (
+  author_id = auth.uid()
+  and exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+)
+with check (
+  author_id = auth.uid()
+  and exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
+create policy "Authors delete own task comments"
+on public.task_comments for delete
+using (
+  author_id = auth.uid()
+  and exists (
+    select 1 from public.tasks t
+    where t.id = task_id
+      and public.is_project_member(t.project_id)
+  )
+);
+
 create policy "Users read own sessions"
 on public.focus_sessions for select
 using (user_id = auth.uid() or public.is_project_member(project_id));
@@ -289,7 +498,43 @@ create policy "Users delete own sessions"
 on public.focus_sessions for delete
 using (user_id = auth.uid());
 
+create policy "Users manage own Pomodoro cancellations"
+on public.pomodoro_cancellations for all
+using (user_id = auth.uid())
+with check (
+  user_id = auth.uid()
+  and public.is_project_member(project_id)
+);
+
 create policy "Users manage own settings"
 on public.user_settings for all
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
+
+grant usage on schema public to anon, authenticated;
+grant usage
+on type
+  public.cancellation_reason,
+  public.focus_sound,
+  public.plan_tier,
+  public.project_kind,
+  public.project_role,
+  public.task_priority
+to authenticated;
+
+grant select, insert, update, delete
+on
+  public.focus_sessions,
+  public.pomodoro_cancellations,
+  public.profiles,
+  public.project_members,
+  public.projects,
+  public.task_categories,
+  public.task_comments,
+  public.task_subtasks,
+  public.task_tags,
+  public.tasks,
+  public.user_settings
+to authenticated;
+
+grant insert on public.marketing_signups to anon, authenticated;

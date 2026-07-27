@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-async function render() {
+async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${path}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -22,17 +22,62 @@ async function render() {
   );
 }
 
-test("server-renders the FlowTimer shell", async () => {
+test("server-renders the Tockli shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>FlowTimer<\/title>/i);
-  assert.match(html, /FlowTimer/);
-  assert.match(html, /Sprint Board/);
+  assert.match(html, /<title>Tockli - Focus timer and task board<\/title>/i);
+  assert.match(html, /Tockli/);
+  assert.match(html, /To do/);
+  assert.match(html, /Doing/);
+  assert.match(html, /Done/);
+  assert.match(html, /Add column/);
+  assert.match(html, /Open To do column menu/);
   assert.match(html, /Focus Timer/);
   assert.match(html, /1 shared project/);
+  assert.doesNotMatch(html, /Sprint Board/);
+  assert.doesNotMatch(html, />Kanban</);
+  assert.doesNotMatch(html, />Personal</);
   assert.doesNotMatch(html, /Your site is taking shape/);
   assert.doesNotMatch(html, /react-loading-skeleton/);
+});
+
+test("server-renders launch marketing routes", async () => {
+  const landing = await render("/landing");
+  assert.equal(landing.status, 200);
+  const landingHtml = await landing.text();
+  assert.match(landingHtml, /Turn a messy task list into one protected focus block/);
+  assert.match(landingHtml, /Launch blog/);
+
+  const signup = await render("/signup");
+  assert.equal(signup.status, 200);
+  const signupHtml = await signup.text();
+  assert.match(signupHtml, /Create your Tockli account/);
+  assert.match(signupHtml, /Join early access/);
+
+  const blog = await render("/blog");
+  assert.equal(blog.status, 200);
+  const blogHtml = await blog.text();
+  assert.match(blogHtml, /Practical notes for calmer focus work/);
+  assert.match(blogHtml, /Why a focus timer works better/);
+
+  const article = await render("/blog/focus-timer-with-a-task-board");
+  assert.equal(article.status, 200);
+  const articleHtml = await article.text();
+  assert.match(articleHtml, /Start with the work, then start the clock/);
+});
+
+test("server-renders SEO discovery routes", async () => {
+  const sitemap = await render("/sitemap.xml");
+  assert.equal(sitemap.status, 200);
+  const sitemapXml = await sitemap.text();
+  assert.match(sitemapXml, /\/landing/);
+  assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);
+
+  const robots = await render("/robots.txt");
+  assert.equal(robots.status, 200);
+  const robotsTxt = await robots.text();
+  assert.match(robotsTxt, /Sitemap: .*\/sitemap.xml/);
 });

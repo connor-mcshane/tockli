@@ -21,6 +21,7 @@
 # misc
 .DS_Store
 *.pem
+/*-preview*.png
 
 # debug
 npm-debug.log*
@@ -41,3 +42,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# supabase local runtime
+/supabase/.branches/
+/supabase/.temp/

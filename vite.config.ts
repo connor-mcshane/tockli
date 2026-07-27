@@ -18,7 +18,7 @@ const localBindingConfig = {
     ? [
         {
           binding: d1,
-          database_name: "flowtimer-d1",
+          database_name: "tockli-d1",
           database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
         },
       ]
@@ -27,7 +27,7 @@ const localBindingConfig = {
     ? [
         {
           binding: r2,
-          bucket_name: "flowtimer-r2",
+          bucket_name: "tockli-r2",
         },
       ]
     : [],
