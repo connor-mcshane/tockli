@@ -6,15 +6,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const staticRoutes = [
     {
       path: "/",
-      priority: 0.8,
-    },
-    {
-      path: "/landing",
       priority: 1,
     },
     {
       path: "/signup",
       priority: 0.9,
+    },
+    {
+      path: "/login",
+      priority: 0.6,
     },
     {
       path: "/blog",

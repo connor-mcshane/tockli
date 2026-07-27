@@ -1,11 +1,15 @@
 # Tockli Deployment Prep
 
 This app is ready to validate as a deployable beta once the hosted runtime
-values are configured. The current build keeps the working app at `/` and adds
-marketing routes for launch prep:
+values are configured. The current build puts the public marketing funnel at
+`/` and keeps the working app behind `/app`:
 
-- `/landing` - SEO landing page with the product screenshot and CTA tracking
-- `/signup` - early access signup with Supabase insert support
+- `/` - SEO landing page with the product screenshot and CTA tracking
+- `/landing` - legacy landing-page alias
+- `/signup` - account signup with Supabase Auth and beta-intent capture
+- `/login` - Supabase email/password and Google login
+- `/auth/callback` - OAuth callback route
+- `/app` - working local-first product app
 - `/blog` - article index
 - `/blog/focus-timer-with-a-task-board`
 - `/blog/lightweight-sharing-for-small-teams`
@@ -33,11 +37,18 @@ email or CRM collector later.
 ## Backend Checklist
 
 - Apply `supabase/migrations/20260722210000_initial_schema.sql` to the hosted
-  Supabase project.
-- Enable Google as a Supabase Auth provider before promoting the Google signup
-  button.
+  Supabase project, then apply later migrations in timestamp order.
+- Enable email/password signups in Supabase Auth.
+- Enable Google as a Supabase Auth provider before promoting the Google auth
+  buttons.
+- Set the Supabase production site URL to `https://tockli.netlify.app`.
+- Add Supabase redirect URLs:
+  `https://tockli.netlify.app/auth/callback` and
+  `http://localhost:3000/auth/callback`.
 - Confirm `public.marketing_signups` allows anonymous inserts and does not allow
   anonymous reads.
+- Confirm `public.handle_new_auth_user()` creates `profiles` and
+  `user_settings` rows for new Auth users.
 - Keep `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
   aligned between local, preview, and production environments.
 
@@ -94,6 +105,14 @@ Current event names:
 - `signup_submitted`
 - `signup_failed`
 - `google_signup_clicked`
+- `auth_signup_started`
+- `auth_signup_succeeded`
+- `auth_signup_failed`
+- `login_started`
+- `login_succeeded`
+- `login_failed`
+- `oauth_started`
+- `password_reset_requested`
 - `task_created`
 - `task_status_changed`
 - `board_column_created`
@@ -114,7 +133,7 @@ seed and `NEXT_PUBLIC_EXPERIMENT_SALT`. The first experiment is
 
 Before interpreting results, pick one primary metric:
 
-- Signup conversion from `/landing` to `/signup`
+- Signup conversion from `/` to `/signup`
 - Email signup completion
 - Open-app click-through
 

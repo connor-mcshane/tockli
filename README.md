@@ -21,13 +21,16 @@ pnpm install
 pnpm run dev
 ```
 
-The local app runs at `http://localhost:3000/`.
+The local site runs at `http://localhost:3000/`.
 
 ## Launch Routes
 
-- `/` - working Tockli app
-- `/landing` - acquisition landing page
-- `/signup` - early access signup
+- `/` - acquisition landing page
+- `/landing` - legacy landing-page alias
+- `/signup` - account signup and beta-intent capture
+- `/login` - Supabase email/password and Google login
+- `/auth/callback` - Supabase OAuth callback route
+- `/app` - working local-first Tockli app
 - `/blog` - launch article index
 - `/sitemap.xml` and `/robots.txt` - SEO discovery routes
 
@@ -86,11 +89,19 @@ The schema includes:
 - focus sessions
 - user settings
 - row-level security policies
+- auth-user profile and settings bootstrap trigger
 - a free-plan guard allowing one owner-created shared project
 - anonymous insert-only marketing signups
 
-Google sign-in should be enabled through Supabase Auth providers when auth is
-wired into the app.
+For hosted auth, enable email/password signups and add Google in Supabase Auth
+providers. Add these redirect URLs in Supabase Auth URL configuration:
+
+```bash
+https://tockli.netlify.app/auth/callback
+http://localhost:3000/auth/callback
+```
+
+Set the Supabase site URL to `https://tockli.netlify.app` for production.
 
 ## Netlify Deployment
 

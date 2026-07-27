@@ -1,6 +1,15 @@
 "use client";
 
-import { ArrowLeft, ArrowRight, CheckCircle2, LogIn, Mail, TimerReset } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  LockKeyhole,
+  LogIn,
+  Mail,
+  TimerReset,
+  User,
+} from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
@@ -26,8 +35,14 @@ function isDuplicateSignup(error: { code?: string; message?: string }) {
   return error.code === "23505" || /duplicate|unique/i.test(error.message ?? "");
 }
 
+function getAuthRedirect() {
+  return `${window.location.origin}/auth/callback?next=/app`;
+}
+
 export default function SignupForm() {
+  const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState(roleOptions[0]);
   const [intent, setIntent] = useState("personal-focus");
   const [status, setStatus] = useState<SignupStatus>("idle");
@@ -52,9 +67,57 @@ export default function SignupForm() {
     trackEvent("page_view", { surface: "signup" });
   }, []);
 
+  async function captureMarketingIntent(normalizedEmail: string) {
+    const payload = {
+      email: normalizedEmail,
+      role,
+      intent,
+      source,
+      experiment_id: experiment.id,
+      experiment_variant: experiment.variant,
+    };
+
+    if (supabase) {
+      const { error } = await supabase.from("marketing_signups").insert(payload);
+      if (error && !isDuplicateSignup(error)) {
+        console.warn("[Tockli signup] marketing capture failed", error.message);
+      }
+      return;
+    }
+
+    if (process.env.NEXT_PUBLIC_SIGNUP_ENDPOINT) {
+      const response = await fetch(process.env.NEXT_PUBLIC_SIGNUP_ENDPOINT, {
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error("Signup endpoint rejected the request.");
+      }
+      return;
+    }
+
+    const storedSignups =
+      window.localStorage.getItem(LOCAL_SIGNUPS_KEY) ??
+      window.localStorage.getItem(LEGACY_LOCAL_SIGNUPS_KEY);
+    const localSignups = JSON.parse(
+      storedSignups ?? "[]",
+    ) as Array<Record<string, string>>;
+    window.localStorage.setItem(
+      LOCAL_SIGNUPS_KEY,
+      JSON.stringify([
+        ...localSignups.filter((signup) => signup.email !== normalizedEmail),
+        payload,
+      ]),
+    );
+    window.localStorage.removeItem(LEGACY_LOCAL_SIGNUPS_KEY);
+  }
+
   async function submitSignup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalizedEmail = email.trim().toLowerCase();
+    const normalizedName = displayName.trim();
 
     if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
       setStatus("error");
@@ -62,89 +125,95 @@ export default function SignupForm() {
       return;
     }
 
+    if (password.length < 8) {
+      setStatus("error");
+      setMessage("Use at least 8 characters for your password.");
+      return;
+    }
+
     setStatus("submitting");
     setMessage("");
     trackEvent("signup_started", {
-      method: "email",
+      method: "email_password",
       role,
       intent,
       source,
       experiment_id: experiment.id,
       variant: experiment.variant,
     });
+    trackEvent("auth_signup_started", {
+      method: "email_password",
+      role,
+      intent,
+      source,
+    });
 
     try {
-      if (supabase) {
-        const { error } = await supabase.from("marketing_signups").insert({
-          email: normalizedEmail,
+      if (!supabase) {
+        await captureMarketingIntent(normalizedEmail);
+        trackEvent("signup_submitted", {
+          method: "local",
           role,
           intent,
           source,
           experiment_id: experiment.id,
-          experiment_variant: experiment.variant,
+          variant: experiment.variant,
         });
-
-        if (error && !isDuplicateSignup(error)) {
-          throw error;
-        }
-      } else if (process.env.NEXT_PUBLIC_SIGNUP_ENDPOINT) {
-        const response = await fetch(process.env.NEXT_PUBLIC_SIGNUP_ENDPOINT, {
-          body: JSON.stringify({
-            email: normalizedEmail,
-            role,
-            intent,
-            source,
-            experiment_id: experiment.id,
-            experiment_variant: experiment.variant,
-          }),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        });
-
-        if (!response.ok) {
-          throw new Error("Signup endpoint rejected the request.");
-        }
-      } else {
-        const storedSignups =
-          window.localStorage.getItem(LOCAL_SIGNUPS_KEY) ??
-          window.localStorage.getItem(LEGACY_LOCAL_SIGNUPS_KEY);
-        const localSignups = JSON.parse(
-          storedSignups ?? "[]",
-        ) as Array<Record<string, string>>;
-        window.localStorage.setItem(
-          LOCAL_SIGNUPS_KEY,
-          JSON.stringify([
-            ...localSignups.filter((signup) => signup.email !== normalizedEmail),
-            {
-              email: normalizedEmail,
-              experiment_id: experiment.id,
-              experiment_variant: experiment.variant,
-              intent,
-              role,
-              source,
-            },
-          ]),
-        );
-        window.localStorage.removeItem(LEGACY_LOCAL_SIGNUPS_KEY);
+        setStatus("success");
+        setMessage("Signup intent saved locally. Add Supabase env vars to create accounts.");
+        return;
       }
 
+      const { data, error } = await supabase.auth.signUp({
+        email: normalizedEmail,
+        password,
+        options: {
+          data: {
+            display_name: normalizedName || normalizedEmail.split("@")[0],
+            intent,
+            role,
+          },
+          emailRedirectTo: getAuthRedirect(),
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      await captureMarketingIntent(normalizedEmail);
       trackEvent("signup_submitted", {
-        method: supabase ? "supabase" : "email",
+        method: "supabase_auth",
         role,
         intent,
         source,
         experiment_id: experiment.id,
         variant: experiment.variant,
       });
+      trackEvent("auth_signup_succeeded", {
+        method: "email_password",
+        has_session: Boolean(data.session),
+      });
+
       setStatus("success");
-      setMessage("You are on the early access list.");
+      if (data.session) {
+        setMessage("Account created. Opening your workspace...");
+        window.setTimeout(() => window.location.assign("/app"), 600);
+      } else {
+        setMessage("Account created. Check your email to confirm, then log in.");
+      }
     } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown";
       trackEvent("signup_failed", {
-        method: supabase ? "supabase" : "email",
-        reason: error instanceof Error ? error.message : "unknown",
+        method: supabase ? "supabase_auth" : "email",
+        reason,
+      });
+      trackEvent("auth_signup_failed", {
+        method: "email_password",
+        reason,
       });
       setStatus("error");
-      setMessage("Signup is not connected yet. Check the deploy prep notes.");
+      setMessage(reason);
     }
   }
 
@@ -152,6 +221,10 @@ export default function SignupForm() {
     trackEvent("google_signup_clicked", {
       supabase_configured: isSupabaseConfigured,
       source,
+    });
+    trackEvent("oauth_started", {
+      provider: "google",
+      surface: "signup",
     });
 
     if (!supabase) {
@@ -163,7 +236,7 @@ export default function SignupForm() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/`,
+        redirectTo: getAuthRedirect(),
       },
     });
 
@@ -177,19 +250,28 @@ export default function SignupForm() {
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between">
-          <Link className="flex items-center gap-3" href="/landing">
+          <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>
             <span className="text-lg font-semibold">Tockli</span>
           </Link>
-          <Link
-            className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            href="/landing"
-          >
-            <ArrowLeft size={16} aria-hidden="true" />
-            Landing
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              className="hidden h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e] sm:flex"
+              href="/"
+            >
+              <ArrowLeft size={16} aria-hidden="true" />
+              Home
+            </Link>
+            <Link
+              className="flex h-10 items-center gap-2 rounded-md bg-[#1a1c1b] px-4 text-sm font-semibold text-white transition hover:bg-[#343634]"
+              href="/login"
+            >
+              <LogIn size={16} aria-hidden="true" />
+              Log in
+            </Link>
+          </div>
         </div>
       </header>
 
@@ -206,14 +288,14 @@ export default function SignupForm() {
 
         <div className="order-1 lg:order-2">
           <p className="text-sm font-semibold uppercase text-[#b90042]">
-            Early access
+            Create account
           </p>
           <h1 className="mt-3 text-4xl font-semibold leading-tight sm:text-5xl">
-            Create your Tockli account.
+            Sign up for Tockli.
           </h1>
           <p className="mt-4 text-lg leading-8 text-[#62605b]">
-            Join the beta list now, then connect Google sign-in when the hosted
-            Supabase project is configured.
+            Create an account for the hosted beta, and tell us how you want to
+            use the workspace so onboarding can stay focused.
           </p>
 
           <div className="mt-8 rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
@@ -228,11 +310,25 @@ export default function SignupForm() {
 
             <div className="my-5 flex items-center gap-3 text-xs font-semibold uppercase text-[#8b8984]">
               <span className="h-px flex-1 bg-[#e8e8e6]" />
-              or join by email
+              or use email
               <span className="h-px flex-1 bg-[#e8e8e6]" />
             </div>
 
             <form className="space-y-4" onSubmit={submitSignup}>
+              <label className="block">
+                <span className="text-sm font-semibold text-[#62605b]">Name</span>
+                <div className="mt-2 flex h-12 items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 focus-within:border-[#ff005e]">
+                  <User size={17} aria-hidden="true" />
+                  <input
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[#8b8984]"
+                    placeholder="Ada Lovelace"
+                    type="text"
+                    value={displayName}
+                    onChange={(event) => setDisplayName(event.target.value)}
+                  />
+                </div>
+              </label>
+
               <label className="block">
                 <span className="text-sm font-semibold text-[#62605b]">Email</span>
                 <div className="mt-2 flex h-12 items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 focus-within:border-[#ff005e]">
@@ -243,6 +339,22 @@ export default function SignupForm() {
                     type="email"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
+                  />
+                </div>
+              </label>
+
+              <label className="block">
+                <span className="text-sm font-semibold text-[#62605b]">
+                  Password
+                </span>
+                <div className="mt-2 flex h-12 items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 focus-within:border-[#ff005e]">
+                  <LockKeyhole size={17} aria-hidden="true" />
+                  <input
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[#8b8984]"
+                    placeholder="At least 8 characters"
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
                   />
                 </div>
               </label>
@@ -282,7 +394,7 @@ export default function SignupForm() {
                 disabled={status === "submitting"}
                 type="submit"
               >
-                {status === "submitting" ? "Saving..." : "Join early access"}
+                {status === "submitting" ? "Creating..." : "Create account"}
                 <ArrowRight size={17} aria-hidden="true" />
               </button>
             </form>
@@ -302,6 +414,13 @@ export default function SignupForm() {
                 <span>{message}</span>
               </div>
             ) : null}
+
+            <p className="mt-5 text-center text-sm text-[#62605b]">
+              Already have an account?{" "}
+              <Link className="font-semibold text-[#ff005e]" href="/login">
+                Log in
+              </Link>
+            </p>
           </div>
         </div>
       </section>

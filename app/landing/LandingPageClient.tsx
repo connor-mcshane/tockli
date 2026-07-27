@@ -75,8 +75,8 @@ export default function LandingPageClient() {
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
           <Link
             className="flex items-center gap-3"
-            href="/landing"
-            onClick={() => trackCta("logo", "/landing")}
+            href="/"
+            onClick={() => trackCta("logo", "/")}
           >
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
@@ -88,8 +88,11 @@ export default function LandingPageClient() {
             <Link className="transition hover:text-[#ff005e]" href="/blog">
               Blog
             </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/">
+            <Link className="transition hover:text-[#ff005e]" href="/app">
               Open app
+            </Link>
+            <Link className="transition hover:text-[#ff005e]" href="/login">
+              Log in
             </Link>
           </nav>
 
@@ -140,8 +143,8 @@ export default function LandingPageClient() {
               </Link>
               <Link
                 className="flex h-12 items-center gap-2 rounded-md border border-[#d8d7d3] bg-white px-5 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-                href="/"
-                onClick={() => trackCta("hero_open_app", "/")}
+                href="/app"
+                onClick={() => trackCta("hero_open_app", "/app")}
               >
                 Open app
               </Link>

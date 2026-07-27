@@ -71,7 +71,7 @@ export default async function BlogArticlePage({ params }: BlogArticlePageProps) 
       />
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
         <div className="mx-auto flex h-16 max-w-3xl items-center justify-between">
-          <Link className="flex items-center gap-3" href="/landing">
+          <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>

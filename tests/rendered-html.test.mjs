@@ -22,8 +22,8 @@ async function render(path = "/") {
   );
 }
 
-test("server-renders the Tockli shell", async () => {
-  const response = await render();
+test("server-renders the Tockli app shell", async () => {
+  const response = await render("/app");
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
@@ -45,6 +45,13 @@ test("server-renders the Tockli shell", async () => {
 });
 
 test("server-renders launch marketing routes", async () => {
+  const home = await render("/");
+  assert.equal(home.status, 200);
+  const homeHtml = await home.text();
+  assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
+  assert.match(homeHtml, /Launch blog/);
+  assert.match(homeHtml, /href="\/app"/);
+
   const landing = await render("/landing");
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
@@ -54,8 +61,14 @@ test("server-renders launch marketing routes", async () => {
   const signup = await render("/signup");
   assert.equal(signup.status, 200);
   const signupHtml = await signup.text();
-  assert.match(signupHtml, /Create your Tockli account/);
-  assert.match(signupHtml, /Join early access/);
+  assert.match(signupHtml, /Sign up for Tockli/);
+  assert.match(signupHtml, /Create account/);
+
+  const login = await render("/login");
+  assert.equal(login.status, 200);
+  const loginHtml = await login.text();
+  assert.match(loginHtml, /Log in and pick up your next focus block/);
+  assert.match(loginHtml, /Continue with Google/);
 
   const blog = await render("/blog");
   assert.equal(blog.status, 200);
@@ -73,11 +86,13 @@ test("server-renders SEO discovery routes", async () => {
   const sitemap = await render("/sitemap.xml");
   assert.equal(sitemap.status, 200);
   const sitemapXml = await sitemap.text();
-  assert.match(sitemapXml, /\/landing/);
+  assert.match(sitemapXml, /<loc>.*\/<\/loc>/);
+  assert.match(sitemapXml, /\/login/);
   assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);
 
   const robots = await render("/robots.txt");
   assert.equal(robots.status, 200);
   const robotsTxt = await robots.text();
+  assert.match(robotsTxt, /Disallow: \/app/);
   assert.match(robotsTxt, /Sitemap: .*\/sitemap.xml/);
 });

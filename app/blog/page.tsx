@@ -24,7 +24,7 @@ export default function BlogIndexPage() {
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
       <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between">
-          <Link className="flex items-center gap-3" href="/landing">
+          <Link className="flex items-center gap-3" href="/">
             <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
               <TimerReset size={20} aria-hidden="true" />
             </span>
@@ -32,7 +32,7 @@ export default function BlogIndexPage() {
           </Link>
           <Link
             className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            href="/landing"
+            href="/"
           >
             <ArrowLeft size={16} aria-hidden="true" />
             Landing
