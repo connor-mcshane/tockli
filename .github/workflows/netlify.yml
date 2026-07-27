@@ -59,25 +59,44 @@ jobs:
     needs: validate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+      NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
+      NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
+      NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
+      NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
     steps:
+      - name: Skip deploy until Netlify secrets exist
+        if: env.NETLIFY_AUTH_TOKEN == '' || env.NETLIFY_SITE_ID == ''
+        run: echo "Skipping Netlify deploy because NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID are not both configured."
+
       - name: Checkout
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         uses: actions/checkout@v4
 
       - name: Setup pnpm
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
       - name: Setup Node
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         run: pnpm install --frozen-lockfile
 
       - name: Deploy production
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         run: >
           pnpm --package=netlify-cli@27.0.0 dlx netlify deploy
           --prod
@@ -85,13 +104,3 @@ jobs:
           --site "$NETLIFY_SITE_ID"
           --auth "$NETLIFY_AUTH_TOKEN"
           --message "GitHub Actions deploy $GITHUB_SHA"
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
-          NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
-          NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
-          NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
