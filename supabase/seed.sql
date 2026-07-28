@@ -96,7 +96,7 @@ values
   (
     '10000000-0000-4000-8000-000000000002',
     '00000000-0000-4000-8000-000000000002',
-    'editor'
+    'viewer'
   )
 on conflict (project_id, user_id) do update
 set role = excluded.role;
@@ -236,7 +236,7 @@ values
   (
     '60000000-0000-4000-8000-000000000001',
     '20000000-0000-4000-8000-000000000002',
-    '00000000-0000-4000-8000-000000000002',
+    '00000000-0000-4000-8000-000000000001',
     'I added the launch milestones. The invite copy can follow next.',
     now() - interval '35 minutes'
   ),

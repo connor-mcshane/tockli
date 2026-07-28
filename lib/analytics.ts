@@ -29,6 +29,7 @@ export type TockliEventName =
   | "project_updated"
   | "project_deleted"
   | "onboarding_completed"
+  | "project_invite_accepted"
   | "settings_updated";
 
 export type AnalyticsProperties = Record<

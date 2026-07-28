@@ -1,12 +1,95 @@
 @import "tailwindcss";
 
 :root {
+  color-scheme: light;
   --background: #f7f7f5;
   --foreground: #1a1c1b;
+  --foreground-soft: #3f403d;
+  --muted: #62605b;
+  --subtle: #8b8984;
   --accent: #ff005e;
+  --accent-hover: #e00054;
+  --accent-soft: #fff0f5;
+  --accent-soft-hover: #ffe5ed;
+  --accent-wash: #fff8fb;
+  --accent-border: #ffd3df;
+  --accent-ring-soft: rgb(255 0 94 / 15%);
+  --accent-ring: rgb(255 0 94 / 30%);
+  --danger: #b90042;
+  --danger-bg: #b90042;
+  --danger-bg-hover: #980037;
   --surface: #ffffff;
+  --surface-translucent: rgb(255 255 255 / 90%);
+  --surface-muted: #f9f9f7;
+  --surface-raised: #fdfdfb;
   --surface-soft: #f4f4f2;
+  --surface-hover: #f0f0ee;
   --border: #e8e8e6;
+  --border-strong: #d8d7d3;
+  --green: #25a565;
+  --green-strong: #256b43;
+  --green-soft: #edf8f1;
+  --green-border: #c9ecd6;
+  --amber: #b77900;
+  --amber-strong: #8a5a00;
+  --amber-soft: #fff7e8;
+  --amber-border: #ffe0a3;
+  --blue: #2f6fed;
+  --overlay: rgb(26 28 27 / 55%);
+  --heat-empty: #ececeb;
+  --shadow-card: 0 14px 40px rgb(26 28 27 / 8%);
+  --shadow-modal: 0 24px 70px rgb(0 0 0 / 28%);
+  --shadow-float: 0 16px 40px rgb(26 28 27 / 16%);
+  --shadow-float-strong: 0 16px 40px rgb(26 28 27 / 22%);
+  --shadow-hover: 0 8px 20px rgb(26 28 27 / 10%);
+  --shadow-accent: 0 12px 36px rgb(255 0 94 / 22%);
+  --shadow-accent-soft: 0 6px 18px rgb(255 0 94 / 10%);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #10120f;
+  --foreground: #f4f2eb;
+  --foreground-soft: #d7d4cb;
+  --muted: #aaa79e;
+  --subtle: #7d7b72;
+  --accent: #ff4f83;
+  --accent-hover: #ff6f9a;
+  --accent-soft: rgb(255 79 131 / 15%);
+  --accent-soft-hover: rgb(255 79 131 / 23%);
+  --accent-wash: rgb(255 79 131 / 9%);
+  --accent-border: rgb(255 111 154 / 36%);
+  --accent-ring-soft: rgb(255 79 131 / 18%);
+  --accent-ring: rgb(255 79 131 / 34%);
+  --danger: #ff9fbd;
+  --danger-bg: #b90042;
+  --danger-bg-hover: #d31656;
+  --surface: #181a17;
+  --surface-translucent: rgb(24 26 23 / 90%);
+  --surface-muted: #1d201b;
+  --surface-raised: #20231e;
+  --surface-soft: #242820;
+  --surface-hover: #2b2f27;
+  --border: #33372f;
+  --border-strong: #464c40;
+  --green: #5fd28f;
+  --green-strong: #96e4b3;
+  --green-soft: rgb(95 210 143 / 15%);
+  --green-border: rgb(95 210 143 / 34%);
+  --amber: #f4bf57;
+  --amber-strong: #ffd991;
+  --amber-soft: rgb(244 191 87 / 15%);
+  --amber-border: rgb(244 191 87 / 34%);
+  --blue: #78a8ff;
+  --overlay: rgb(0 0 0 / 66%);
+  --heat-empty: #282c25;
+  --shadow-card: 0 16px 42px rgb(0 0 0 / 28%);
+  --shadow-modal: 0 28px 80px rgb(0 0 0 / 55%);
+  --shadow-float: 0 18px 46px rgb(0 0 0 / 38%);
+  --shadow-float-strong: 0 20px 52px rgb(0 0 0 / 48%);
+  --shadow-hover: 0 12px 28px rgb(0 0 0 / 34%);
+  --shadow-accent: 0 12px 38px rgb(255 79 131 / 22%);
+  --shadow-accent-soft: 0 8px 22px rgb(255 79 131 / 14%);
 }
 
 @theme inline {
@@ -33,9 +116,21 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   letter-spacing: 0;
+}
+
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+select option {
+  background: var(--surface);
+  color: var(--foreground);
 }
 
 button {

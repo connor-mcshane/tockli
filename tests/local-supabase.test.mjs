@@ -41,6 +41,7 @@ async function resetTestData() {
     await tx`delete from public.task_tags where task_id in (select id from public.tasks where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
     await tx`delete from public.tasks where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
     await tx`delete from public.task_categories where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
+    await tx`delete from public.project_invitations where invited_by in (${ownerId}, ${collaboratorId}, ${outsiderId}) or accepted_by in (${ownerId}, ${collaboratorId}, ${outsiderId}) or project_id in (select id from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
     await tx`delete from public.project_members where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId}) or project_id in (select id from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
     await tx`delete from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
     await tx`delete from public.user_settings where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
@@ -258,10 +259,59 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   `;
   assert.ok(secondTeamProject.id);
 
-  await sql`
-    insert into public.project_members (project_id, user_id, role)
-    values (${teamProject.id}, ${collaboratorId}, 'editor')
+  await assert.rejects(
+    sql`
+      insert into public.project_members (project_id, user_id, role)
+      values (${teamProject.id}, ${collaboratorId}, 'editor')
+    `,
+    /Project collaborators are read-only users/,
+  );
+
+  const [invite] = await withAuthenticatedUser(ownerId, async (tx) =>
+    tx`
+      insert into public.project_invitations (
+        project_id,
+        invited_email,
+        invited_by
+      )
+      values (
+        ${teamProject.id},
+        'collaborator@tockli.test',
+        ${ownerId}
+      )
+      returning token, role, status
+    `,
+  );
+  assert.equal(invite.role, "viewer");
+  assert.equal(invite.status, "pending");
+
+  await assert.rejects(
+    withAuthenticatedUser(outsiderId, async (tx) =>
+      tx`select * from public.accept_project_invite(${invite.token})`,
+    ),
+    /Project invite is invalid, expired, or belongs to another email/,
+  );
+
+  const [acceptedInvite] = await withAuthenticatedUser(collaboratorId, async (tx) =>
+    tx`select * from public.accept_project_invite(${invite.token})`,
+  );
+  assert.equal(acceptedInvite.project_id, teamProject.id);
+  assert.equal(acceptedInvite.project_name, "Shared Sprint");
+  assert.equal(acceptedInvite.role, "viewer");
+
+  const [collaboratorMembership] = await sql`
+    select role from public.project_members
+    where project_id = ${teamProject.id}
+      and user_id = ${collaboratorId}
   `;
+  assert.equal(collaboratorMembership.role, "viewer");
+
+  const [acceptedInviteRecord] = await sql`
+    select status, accepted_by from public.project_invitations
+    where token = ${invite.token}
+  `;
+  assert.equal(acceptedInviteRecord.status, "accepted");
+  assert.equal(acceptedInviteRecord.accepted_by, collaboratorId);
 
   const [category] = await withAuthenticatedUser(ownerId, async (tx) => {
     const [createdCategory] = await tx`
@@ -325,6 +375,16 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   );
   assert.equal(movedTask.status, "waiting");
 
+  const viewerTaskUpdates = await withAuthenticatedUser(collaboratorId, async (tx) =>
+    tx`
+        update public.tasks
+        set title = 'Viewer should not edit this'
+        where id = ${task.id}
+        returning id
+      `,
+  );
+  assert.equal(viewerTaskUpdates.length, 0);
+
   await withAuthenticatedUser(ownerId, async (tx) => {
     const [subtask] = await tx`
       insert into public.task_subtasks (
@@ -360,19 +420,18 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
     assert.equal(comment.body, "Owner comment on the shared task.");
   });
 
-  await withAuthenticatedUser(collaboratorId, async (tx) => {
-    const [comment] = await tx`
-      insert into public.task_comments (task_id, author_id, body)
-      values (
-        ${task.id},
-        ${collaboratorId},
-        'Collaborator reply on the shared task.'
-      )
-      returning id, body
-    `;
-
-    assert.equal(comment.body, "Collaborator reply on the shared task.");
-  });
+  await assert.rejects(
+    withAuthenticatedUser(collaboratorId, async (tx) => {
+      await tx`
+        insert into public.task_comments (task_id, author_id, body)
+        values (
+          ${task.id},
+          ${collaboratorId},
+          'Collaborator reply on the shared task.'
+        )
+      `;
+    }),
+  );
 
   const collaboratorVisibleTasks = await withAuthenticatedUser(
     collaboratorId,
@@ -409,7 +468,7 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
         order by created_at
       `,
   );
-  assert.equal(collaboratorVisibleComments.length, 2);
+  assert.equal(collaboratorVisibleComments.length, 1);
 
   const collaboratorVisibleProfiles = await withAuthenticatedUser(
     collaboratorId,

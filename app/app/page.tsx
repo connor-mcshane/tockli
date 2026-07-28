@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Copy,
   Eye,
   EyeOff,
   FileText,
@@ -18,8 +19,10 @@ import {
   ListChecks,
   LogIn,
   LogOut,
+  Mail,
   Menu,
   MessageSquare,
+  Moon,
   MoreHorizontal,
   Palette,
   Pencil,
@@ -29,11 +32,15 @@ import {
   Send,
   Settings,
   Share2,
+  ShieldCheck,
   Sparkles,
+  Sun,
   Tag,
   TimerReset,
   Trash2,
+  UserPlus,
   Users,
+  UserCircle,
   Volume2,
   VolumeX,
   X,
@@ -45,7 +52,11 @@ import { trackEvent } from "@/lib/analytics";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type View = "board" | "timer" | "analytics" | "settings";
+type PlanTier = "free" | "pro";
 type ProjectKind = "personal" | "team";
+type ProjectRole = "owner" | "viewer";
+type ProjectInviteStatus = "pending" | "accepted";
+type ThemeMode = "light" | "dark";
 type TaskStatus = string;
 type Priority = "low" | "medium" | "high";
 type FocusSound =
@@ -64,20 +75,52 @@ type CancellationReason =
 
 type Project = {
   id: string;
+  ownerId?: string;
   name: string;
   description: string;
   kind: ProjectKind;
   color: string;
   members: number;
-  memberEmails: string[];
+  memberEmails?: string[];
+  currentUserRole: ProjectRole;
+  teamMembers: ProjectMember[];
+  pendingInvites: ProjectInvite[];
   columns: BoardColumn[];
 };
 
-type ProjectDetails = {
+type ProjectMember = {
+  id: string;
+  name: string;
+  email: string;
+  role: ProjectRole;
+  joinedAt?: string;
+};
+
+type ProjectInvite = {
+  id: string;
+  email: string;
+  token: string;
+  status: ProjectInviteStatus;
+  invitedAt: string;
+  acceptedAt?: string;
+};
+
+type ProjectDialogMode = "create" | "edit";
+
+type ProjectDialogState = {
+  mode: ProjectDialogMode;
+  projectId?: string;
+  kind?: ProjectKind;
+};
+
+type ProjectDialogValues = {
   name: string;
   description: string;
+  kind: ProjectKind;
   color: string;
-  memberEmails: string[];
+  inviteEmails: string[];
+  retainedMemberIds: string[];
+  retainedInviteIds: string[];
 };
 
 type BoardColumn = {
@@ -153,6 +196,7 @@ type UserSettings = {
   soundEnabled: boolean;
   focusSound: FocusSound;
   showNextUp: boolean;
+  themeMode: ThemeMode;
 };
 
 type StoredState = {
@@ -174,6 +218,7 @@ const STORAGE_MIGRATION_KEY = "tockli.mvp.v1.user-scoped";
 const currentUser = {
   id: "current-user",
   name: "Connor McShane",
+  email: "connor@tockli.local",
 };
 
 function readUserMetadata(user: User | null, key: string) {
@@ -184,22 +229,48 @@ function readUserMetadata(user: User | null, key: string) {
 const initialProjects: Project[] = [
   {
     id: "project-deep-work",
+    ownerId: currentUser.id,
     name: "Deep Work",
     description: "A personal space for focused work.",
     kind: "personal",
     color: "#ff005e",
     members: 1,
-    memberEmails: [],
+    currentUserRole: "owner",
+    teamMembers: [
+      {
+        id: currentUser.id,
+        name: currentUser.name,
+        email: currentUser.email,
+        role: "owner",
+      },
+    ],
+    pendingInvites: [],
     columns: createDefaultBoardColumns(),
   },
   {
     id: "project-launch",
+    ownerId: currentUser.id,
     name: "Launch Crew",
     description: "A shared board for lightweight collaboration.",
     kind: "team",
     color: "#25a565",
     members: 2,
-    memberEmails: ["friend@tockli.test"],
+    currentUserRole: "owner",
+    teamMembers: [
+      {
+        id: currentUser.id,
+        name: currentUser.name,
+        email: currentUser.email,
+        role: "owner",
+      },
+      {
+        id: "launch-readonly-user",
+        name: "Launch reviewer",
+        email: "reviewer@tockli.local",
+        role: "viewer",
+      },
+    ],
+    pendingInvites: [],
     columns: createDefaultBoardColumns(),
   },
 ];
@@ -422,6 +493,7 @@ const initialSettings: UserSettings = {
   soundEnabled: true,
   focusSound: "brown_noise",
   showNextUp: false,
+  themeMode: "light",
 };
 
 const focusSoundLabels: Record<FocusSound, string> = {
@@ -467,6 +539,17 @@ const categoryColorOptions = [
   "#7c5cff",
   "#e05d2f",
 ];
+const projectColorOptions = categoryColorOptions;
+
+const planLabels: Record<PlanTier, string> = {
+  free: "Free",
+  pro: "Pro",
+};
+
+const projectRoleLabels: Record<ProjectRole, string> = {
+  owner: "Admin",
+  viewer: "User",
+};
 
 function createDefaultBoardColumns(): BoardColumn[] {
   return [
@@ -572,14 +655,14 @@ function isToday(date: string) {
 
 function priorityClass(priority: Priority) {
   if (priority === "high") {
-    return "bg-[#fff0f5] text-[#b90042] border-[#ffd3df]";
+    return "bg-[var(--accent-soft)] text-[var(--danger)] border-[var(--accent-border)]";
   }
 
   if (priority === "medium") {
-    return "bg-[#fff7e8] text-[#8a5a00] border-[#ffe0a3]";
+    return "bg-[var(--amber-soft)] text-[var(--amber-strong)] border-[var(--amber-border)]";
   }
 
-  return "bg-[#edf8f1] text-[#256b43] border-[#c9ecd6]";
+  return "bg-[var(--green-soft)] text-[var(--green-strong)] border-[var(--green-border)]";
 }
 
 function createId(prefix: string) {
@@ -590,10 +673,169 @@ function createId(prefix: string) {
   return `${prefix}-${Date.now()}`;
 }
 
-function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
+function createInviteToken() {
+  if (typeof crypto !== "undefined") {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+function normalizeEmail(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function isValidEmail(value: string) {
+  return /^\S+@\S+\.\S+$/.test(normalizeEmail(value));
+}
+
+function uniqueEmails(values: string[]) {
+  return Array.from(new Set(values.map(normalizeEmail))).filter(isValidEmail);
+}
+
+function relationOne<T>(value: T | T[] | null | undefined) {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function createCurrentUserMember(
+  userId = currentUser.id,
+  name = currentUser.name,
+  email = currentUser.email,
+): ProjectMember {
   return {
+    id: userId,
+    name,
+    email,
+    role: "owner",
+  };
+}
+
+function normalizeProjectRole(role?: string | null): ProjectRole {
+  return role === "owner" ? "owner" : "viewer";
+}
+
+function normalizeProjectMembers(
+  members: Array<Partial<ProjectMember>> | undefined,
+  fallbackCount = 1,
+): ProjectMember[] {
+  const normalized = (members ?? [])
+    .map((member, index) => ({
+      id: member.id?.trim() || createId("member"),
+      name:
+        member.name?.trim() ||
+        member.email?.split("@")[0] ||
+        `Project user ${index + 1}`,
+      email: normalizeEmail(member.email ?? ""),
+      role: normalizeProjectRole(member.role),
+      joinedAt: member.joinedAt,
+    }))
+    .filter((member) => member.name || member.email);
+
+  if (!normalized.length) {
+    normalized.push(createCurrentUserMember());
+  }
+
+  if (fallbackCount > normalized.length) {
+    normalized.push({
+      id: "local-readonly-user",
+      name: "Read-only teammate",
+      email: "teammate@tockli.local",
+      role: "viewer",
+    });
+  }
+
+  const ownerIndex = normalized.findIndex((member) => member.role === "owner");
+  const owner = ownerIndex >= 0 ? normalized[ownerIndex] : normalized[0];
+  return normalized.map((member) => ({
+    ...member,
+    role: member.id === owner.id ? "owner" : "viewer",
+  }));
+}
+
+function normalizeProjectInvites(
+  invites?: Array<Partial<ProjectInvite>>,
+): ProjectInvite[] {
+  return (invites ?? [])
+    .map((invite) => ({
+      id: invite.id ?? createId("invite"),
+      email: normalizeEmail(invite.email ?? ""),
+      token: invite.token ?? createInviteToken(),
+      status: invite.status === "accepted" ? "accepted" : "pending",
+      invitedAt: invite.invitedAt ?? new Date().toISOString(),
+      acceptedAt: invite.acceptedAt,
+    }))
+    .filter((invite) => isValidEmail(invite.email));
+}
+
+function getProjectMemberCount(project: Project) {
+  return Math.max(
+    1,
+    project.teamMembers.filter((member) => member.role === "owner" || member.role === "viewer")
+      .length,
+  );
+}
+
+function getInviteUrl(token: string) {
+  if (typeof window === "undefined") {
+    return `/app?invite=${encodeURIComponent(token)}`;
+  }
+
+  return `${window.location.origin}/app?invite=${encodeURIComponent(token)}`;
+}
+
+function getInviteAuthRedirect(token: string) {
+  if (typeof window === "undefined") {
+    return `/auth/callback?next=${encodeURIComponent(`/app?invite=${token}`)}`;
+  }
+
+  return `${window.location.origin}/auth/callback?next=${encodeURIComponent(
+    `/app?invite=${token}`,
+  )}`;
+}
+
+function openInviteEmailDraft(email: string, projectName: string, token: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const inviteUrl = getInviteUrl(token);
+  const subject = encodeURIComponent(`Join ${projectName} on Tockli`);
+  const body = encodeURIComponent(
+    [
+      `You have been invited to join ${projectName} on Tockli.`,
+      "",
+      "Open this invite link to sign in and join the project as a read-only user:",
+      inviteUrl,
+    ].join("\n"),
+  );
+  window.open(`mailto:${encodeURIComponent(email)}?subject=${subject}&body=${body}`);
+}
+
+function normalizeThemeMode(themeMode?: string): ThemeMode {
+  return themeMode === "dark" ? "dark" : "light";
+}
+
+function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
+  const normalized = {
     ...initialSettings,
     ...settings,
+  };
+
+  return {
+    ...normalized,
+    themeMode: normalizeThemeMode(settings?.themeMode),
   };
 }
 
@@ -604,17 +846,31 @@ function normalizeProjects(projects?: Array<Partial<Project>>): Project[] {
 
   return projects.map((project) => {
     const memberEmails = project.memberEmails?.filter(Boolean) ?? [];
+    const legacyMembers: ProjectMember[] = memberEmails.map((email) => ({
+      id: `legacy-${normalizeEmail(email)}`,
+      name: normalizeEmail(email).split("@")[0] || "Project user",
+      email: normalizeEmail(email),
+      role: "viewer",
+    }));
+    const teamMembers = normalizeProjectMembers(
+      project.teamMembers?.length
+        ? project.teamMembers
+        : [createCurrentUserMember(), ...legacyMembers],
+      project.members,
+    );
 
     return {
       id: project.id ?? createId("project"),
+      ownerId: project.ownerId ?? currentUser.id,
       name: project.name?.trim() || "New Project",
       description: project.description?.trim() ?? "",
       kind: project.kind ?? "personal",
       color: project.color || "#ff005e",
-      members: project.memberEmails
-        ? 1 + memberEmails.length
-        : project.members ?? 1,
       memberEmails,
+      currentUserRole: normalizeProjectRole(project.currentUserRole),
+      teamMembers,
+      pendingInvites: normalizeProjectInvites(project.pendingInvites),
+      members: Math.max(project.members ?? 1, teamMembers.length),
       columns: normalizeBoardColumns(project.columns),
     };
   });
@@ -682,6 +938,62 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
   }));
 }
 
+type RemoteProfileRow = {
+  id?: string | null;
+  email?: string | null;
+  display_name?: string | null;
+};
+
+type RemoteProjectRow = {
+  id: string;
+  owner_id: string;
+  name: string;
+  description?: string | null;
+  kind: ProjectKind;
+  color: string;
+  board_columns?: unknown;
+};
+
+type RemoteMembershipRow = {
+  project_id: string;
+  user_id: string;
+  role: string;
+  profiles?: RemoteProfileRow | RemoteProfileRow[] | null;
+  projects?: RemoteProjectRow | RemoteProjectRow[] | null;
+};
+
+type RemoteInviteRow = {
+  id: string;
+  project_id: string;
+  invited_email: string;
+  token: string;
+  status: string;
+  created_at: string;
+  accepted_at?: string | null;
+};
+
+function mapRemoteMember(row: RemoteMembershipRow): ProjectMember {
+  const profile = relationOne(row.profiles);
+  const email = normalizeEmail(profile?.email ?? "");
+  return {
+    id: row.user_id,
+    name: profile?.display_name?.trim() || email.split("@")[0] || "Tockli user",
+    email,
+    role: normalizeProjectRole(row.role),
+  };
+}
+
+function mapRemoteInvite(row: RemoteInviteRow): ProjectInvite {
+  return {
+    id: row.id,
+    email: normalizeEmail(row.invited_email),
+    token: row.token,
+    status: row.status === "accepted" ? "accepted" : "pending",
+    invitedAt: row.created_at,
+    acceptedAt: row.accepted_at ?? undefined,
+  };
+}
+
 function normalizeTag(tag: string) {
   return tag.trim().replace(/^#/, "").toLowerCase();
 }
@@ -716,9 +1028,14 @@ export default function Home() {
   const [sessions, setSessions] = useState<FocusSession[]>([]);
   const [cancellations, setCancellations] = useState<PomodoroCancellation[]>([]);
   const [settings, setSettings] = useState<UserSettings>(initialSettings);
+  const [profilePlan, setProfilePlan] = useState<PlanTier>("free");
   const [activeProjectId, setActiveProjectId] = useState(initialProjects[0].id);
   const [selectedTaskId, setSelectedTaskId] = useState("task-wireframes");
   const [focusTaskId, setFocusTaskId] = useState("");
+  const [projectDialog, setProjectDialog] = useState<ProjectDialogState | null>(
+    null,
+  );
+  const [projectNotice, setProjectNotice] = useState("");
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [sessionNote, setSessionNote] = useState("");
@@ -734,9 +1051,6 @@ export default function Home() {
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
   const [hydrated, setHydrated] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [projectDialogId, setProjectDialogId] = useState<string | null>(null);
-  const [createProjectKind, setCreateProjectKind] =
-    useState<ProjectKind | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioPreviewTimeoutRef = useRef<number | null>(null);
   const audioNodeRef = useRef<{
@@ -744,6 +1058,15 @@ export default function Home() {
     oscillator?: OscillatorNode;
     source?: AudioBufferSourceNode;
   } | null>(null);
+  const authDisplayName =
+    readUserMetadata(authUser, "display_name") ||
+    readUserMetadata(authUser, "full_name") ||
+    authUser?.email?.split("@")[0] ||
+    (isSupabaseConfigured ? "Tockli user" : "Demo user");
+  const authEmail = authUser?.email ?? currentUser.email;
+  const authInitial = authDisplayName.trim().charAt(0).toUpperCase() || "T";
+  const appUserId = authUser?.id ?? currentUser.id;
+  const appUserName = authDisplayName || currentUser.name;
 
   useEffect(() => {
     if (!supabase) {
@@ -766,8 +1089,11 @@ export default function Home() {
       }
 
       if (!data.session) {
+        const nextPath = `${window.location.pathname}${window.location.search}`;
         window.location.replace(
-          "/login?next=/app&message=Please%20log%20in%20to%20open%20Tockli.",
+          `/login?next=${encodeURIComponent(
+            nextPath,
+          )}&message=Please%20log%20in%20to%20open%20Tockli.`,
         );
         return;
       }
@@ -786,7 +1112,8 @@ export default function Home() {
       }
 
       if (!session) {
-        window.location.replace("/login?next=/app");
+        const nextPath = `${window.location.pathname}${window.location.search}`;
+        window.location.replace(`/login?next=${encodeURIComponent(nextPath)}`);
         return;
       }
 
@@ -907,6 +1234,242 @@ export default function Home() {
     tasks,
   ]);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.themeMode;
+    document.documentElement.style.colorScheme = settings.themeMode;
+
+    return () => {
+      document.documentElement.removeAttribute("data-theme");
+      document.documentElement.style.colorScheme = "";
+    };
+  }, [settings.themeMode]);
+
+  const refreshRemoteWorkspace = useCallback(
+    async (preferredProjectId?: string) => {
+      if (!supabase || !authUser) {
+        return;
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("plan")
+        .eq("id", authUser.id)
+        .maybeSingle();
+
+      if (!profileError && (profile?.plan === "free" || profile?.plan === "pro")) {
+        setProfilePlan(profile.plan);
+      }
+
+      const { data: membershipData, error: membershipError } = await supabase
+        .from("project_members")
+        .select(
+          "project_id,user_id,role,profiles(id,email,display_name),projects(id,owner_id,name,description,kind,color,board_columns)",
+        )
+        .eq("user_id", authUser.id);
+
+      if (membershipError) {
+        setProjectNotice(membershipError.message);
+        return;
+      }
+
+      const membershipRows = (membershipData ?? []) as RemoteMembershipRow[];
+      const remoteProjects = membershipRows
+        .map((membership) => {
+          const remoteProject = relationOne(membership.projects);
+          if (!remoteProject) {
+            return null;
+          }
+
+          const columns = Array.isArray(remoteProject.board_columns)
+            ? (remoteProject.board_columns as Array<Partial<BoardColumn>>)
+            : undefined;
+
+          return {
+            id: remoteProject.id,
+            ownerId: remoteProject.owner_id,
+            name: remoteProject.name,
+            description: remoteProject.description ?? "",
+            kind: remoteProject.kind,
+            color: remoteProject.color || "#ff005e",
+            currentUserRole: normalizeProjectRole(membership.role),
+            members: 1,
+            teamMembers: [],
+            pendingInvites: [],
+            columns: normalizeBoardColumns(columns),
+          } satisfies Project;
+        })
+        .filter((project): project is Project => Boolean(project));
+
+      if (!remoteProjects.length) {
+        return;
+      }
+
+      const projectIds = remoteProjects.map((project) => project.id);
+      const { data: allMembershipData } = await supabase
+        .from("project_members")
+        .select("project_id,user_id,role,profiles(id,email,display_name)")
+        .in("project_id", projectIds);
+
+      const membersByProjectId = new Map<string, ProjectMember[]>();
+      ((allMembershipData ?? []) as RemoteMembershipRow[]).forEach((memberRow) => {
+        const members = membersByProjectId.get(memberRow.project_id) ?? [];
+        members.push(mapRemoteMember(memberRow));
+        membersByProjectId.set(memberRow.project_id, members);
+      });
+
+      const ownedProjectIds = remoteProjects
+        .filter((project) => project.currentUserRole === "owner")
+        .map((project) => project.id);
+      const invitesByProjectId = new Map<string, ProjectInvite[]>();
+
+      if (ownedProjectIds.length) {
+        const { data: inviteData } = await supabase
+          .from("project_invitations")
+          .select("id,project_id,invited_email,token,status,created_at,accepted_at")
+          .in("project_id", ownedProjectIds)
+          .eq("status", "pending");
+
+        ((inviteData ?? []) as RemoteInviteRow[]).forEach((inviteRow) => {
+          const invites = invitesByProjectId.get(inviteRow.project_id) ?? [];
+          invites.push(mapRemoteInvite(inviteRow));
+          invitesByProjectId.set(inviteRow.project_id, invites);
+        });
+      }
+
+      const hydratedProjects = remoteProjects.map((project) => {
+        const teamMembers = normalizeProjectMembers(
+          membersByProjectId.get(project.id),
+          1,
+        );
+        return {
+          ...project,
+          teamMembers,
+          members: teamMembers.length,
+          pendingInvites: invitesByProjectId.get(project.id) ?? [],
+        };
+      });
+
+      setProjects(hydratedProjects);
+      setActiveProjectId((current) =>
+        preferredProjectId && hydratedProjects.some((project) => project.id === preferredProjectId)
+          ? preferredProjectId
+          : hydratedProjects.some((project) => project.id === current)
+            ? current
+            : hydratedProjects[0].id,
+      );
+    },
+    [authUser],
+  );
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      void refreshRemoteWorkspace();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [hydrated, refreshRemoteWorkspace]);
+
+  useEffect(() => {
+    if (!authReady || !hydrated) {
+      return;
+    }
+
+    const token = new URL(window.location.href).searchParams.get("invite");
+    if (!token) {
+      return;
+    }
+
+    let alive = true;
+
+    async function acceptInvite() {
+      if (supabase && authUser) {
+        const { data, error } = await supabase.rpc("accept_project_invite", {
+          invite_token: token,
+        });
+
+        if (!alive) {
+          return;
+        }
+
+        if (error) {
+          setProjectNotice(error.message);
+          return;
+        }
+
+        const acceptedProject = Array.isArray(data) ? data[0] : null;
+        if (acceptedProject?.project_id) {
+          setProjectNotice(
+            `You joined ${acceptedProject.project_name} as a read-only user.`,
+          );
+          trackEvent("project_invite_accepted", {
+            project_id: acceptedProject.project_id,
+          });
+          await refreshRemoteWorkspace(acceptedProject.project_id);
+        }
+      } else {
+        let acceptedProject: Project | null = null;
+        const invitedEmail = normalizeEmail(authEmail);
+
+        setProjects((currentProjects) =>
+          currentProjects.map((project) => {
+            const invite = project.pendingInvites.find(
+              (item) =>
+                item.token === token &&
+                (!isValidEmail(invitedEmail) || item.email === invitedEmail),
+            );
+
+            if (!invite) {
+              return project;
+            }
+
+            const member: ProjectMember = {
+              id: createId("member"),
+              name: invite.email.split("@")[0] || "Read-only teammate",
+              email: invite.email,
+              role: "viewer",
+              joinedAt: new Date().toISOString(),
+            };
+            const teamMembers = normalizeProjectMembers([
+              ...project.teamMembers,
+              member,
+            ]);
+            acceptedProject = {
+              ...project,
+              kind: "team",
+              teamMembers,
+              members: teamMembers.length,
+              pendingInvites: project.pendingInvites.filter(
+                (item) => item.id !== invite.id,
+              ),
+            };
+            return acceptedProject;
+          }),
+        );
+
+        if (acceptedProject) {
+          setActiveProjectId(acceptedProject.id);
+          setProjectNotice(`Invite accepted for ${acceptedProject.name}.`);
+        } else {
+          setProjectNotice("This invite link was not found in this browser.");
+        }
+      }
+
+      if (alive) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    }
+
+    void acceptInvite();
+
+    return () => {
+      alive = false;
+    };
+  }, [authEmail, authReady, authUser, hydrated, refreshRemoteWorkspace]);
+
   const activeProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId),
     [activeProjectId, projects],
@@ -961,8 +1524,13 @@ export default function Home() {
   );
 
   const teamProjectCount = projects.filter(
-    (project) => project.kind === "team",
+    (project) => project.kind === "team" && project.currentUserRole === "owner",
   ).length;
+  const activeProjectCanEdit = activeProject?.currentUserRole !== "viewer";
+
+  function canEditProject(projectId: string) {
+    return projects.find((project) => project.id === projectId)?.currentUserRole !== "viewer";
+  }
 
   const activeGoal = settings.dailyPomodoroGoal;
   const todaysPomodoros = sessions.filter((session) =>
@@ -1029,7 +1597,12 @@ export default function Home() {
 
       setSessions((current) => [session, ...current]);
 
-      if (completedTask) {
+      const canUpdateCompletedTask =
+        completedTask &&
+        projects.find((project) => project.id === completedTask.projectId)
+          ?.currentUserRole !== "viewer";
+
+      if (completedTask && canUpdateCompletedTask) {
         setTasks((current) =>
           current.map((task) =>
             task.id === completedTask.id
@@ -1126,6 +1699,10 @@ export default function Home() {
   ]);
 
   function addTask(status: TaskStatus) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     const task: Task = {
       id: createId("task"),
       projectId: activeProjectId,
@@ -1162,6 +1739,10 @@ export default function Home() {
 
   function moveTask(taskId: string, status: TaskStatus) {
     const task = tasks.find((item) => item.id === taskId);
+    if (!task || !canEditProject(task.projectId)) {
+      return;
+    }
+
     setTasks((current) =>
       current.map((task) => (task.id === taskId ? { ...task, status } : task)),
     );
@@ -1180,6 +1761,10 @@ export default function Home() {
   }
 
   function renameBoardColumn(columnId: string, title: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     const nextTitle = title.trim();
 
     if (!nextTitle) {
@@ -1203,6 +1788,10 @@ export default function Home() {
   }
 
   function addBoardColumn(title: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     const nextTitle = title.trim();
 
     if (!nextTitle) {
@@ -1227,6 +1816,10 @@ export default function Home() {
   }
 
   function reorderBoardColumn(sourceColumnId: string, targetColumnId: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     setProjects((current) =>
       current.map((project) => {
         if (project.id !== activeProjectId) {
@@ -1253,6 +1846,10 @@ export default function Home() {
   }
 
   function archiveBoardColumn(columnId: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     const project = projects.find((item) => item.id === activeProjectId);
     const activeColumns =
       project?.columns.filter((column) => !column.archived) ?? [];
@@ -1278,6 +1875,10 @@ export default function Home() {
   }
 
   function restoreBoardColumn(columnId: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     setProjects((current) =>
       current.map((project) =>
         project.id === activeProjectId
@@ -1295,6 +1896,10 @@ export default function Home() {
   }
 
   function deleteBoardColumn(columnId: string) {
+    if (!activeProjectCanEdit) {
+      return;
+    }
+
     const project = projects.find((item) => item.id === activeProjectId);
     const activeColumns =
       project?.columns.filter((column) => !column.archived) ?? [];
@@ -1365,6 +1970,11 @@ export default function Home() {
   }
 
   function updateTask(taskId: string, updates: Partial<Task>) {
+    const existingTask = tasks.find((task) => task.id === taskId);
+    if (!existingTask || !canEditProject(existingTask.projectId)) {
+      return;
+    }
+
     setTasks((current) =>
       current.map((task) =>
         task.id === taskId
@@ -1381,6 +1991,11 @@ export default function Home() {
   }
 
   function deleteTask(taskId: string) {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task || !canEditProject(task.projectId)) {
+      return;
+    }
+
     if (isRunning && focusTaskId === taskId) {
       return;
     }
@@ -1404,6 +2019,10 @@ export default function Home() {
   }
 
   function createCategory(name: string, color: string) {
+    if (!activeProjectCanEdit) {
+      return activeProjectCategories[0]?.id ?? "";
+    }
+
     const category: TaskCategory = {
       id: createId("category"),
       projectId: activeProjectId,
@@ -1415,28 +2034,374 @@ export default function Home() {
     return category.id;
   }
 
-  function openCreateProject(kind: ProjectKind) {
-    if (kind === "team" && teamProjectCount >= 1) {
-      return;
-    }
-
-    setCreateProjectKind(kind);
+  function openCreateProjectDialog(kind: ProjectKind = "personal") {
+    setProjectDialog({ mode: "create", kind });
   }
 
-  function createProject(kind: ProjectKind, details: ProjectDetails) {
-    if (kind === "team" && teamProjectCount >= 1) {
+  function openEditProjectDialog(projectId = activeProjectId) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project || project.currentUserRole !== "owner") {
       return;
     }
 
-    const project: Project = {
+    setProjectDialog({ mode: "edit", projectId });
+  }
+
+  async function ensureRemoteProject(project: Project) {
+    if (!supabase || !authUser || isUuid(project.id)) {
+      return project;
+    }
+
+    const { data, error } = await supabase
+      .from("projects")
+      .insert({
+        board_columns: project.columns,
+        color: project.color,
+        description: project.description,
+        kind: project.kind,
+        name: project.name,
+        owner_id: authUser.id,
+      })
+      .select("id,owner_id,name,description,kind,color,board_columns")
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    const remoteProject = data as RemoteProjectRow;
+    const migratedProject: Project = {
+      ...project,
+      id: remoteProject.id,
+      ownerId: remoteProject.owner_id,
+      currentUserRole: "owner",
+      teamMembers: [
+        createCurrentUserMember(appUserId, appUserName, authEmail),
+      ],
+      members: 1,
+      pendingInvites: [],
+    };
+
+    setProjects((current) =>
+      current.map((item) => (item.id === project.id ? migratedProject : item)),
+    );
+    setCategories((current) =>
+      current.map((category) =>
+        category.projectId === project.id
+          ? { ...category, projectId: migratedProject.id }
+          : category,
+      ),
+    );
+    setTasks((current) =>
+      current.map((task) =>
+        task.projectId === project.id
+          ? { ...task, projectId: migratedProject.id }
+          : task,
+      ),
+    );
+    setSessions((current) =>
+      current.map((session) =>
+        session.projectId === project.id
+          ? { ...session, projectId: migratedProject.id }
+          : session,
+      ),
+    );
+    setCancellations((current) =>
+      current.map((cancellation) =>
+        cancellation.projectId === project.id
+          ? { ...cancellation, projectId: migratedProject.id }
+          : cancellation,
+      ),
+    );
+    setActiveProjectId((current) =>
+      current === project.id ? migratedProject.id : current,
+    );
+
+    return migratedProject;
+  }
+
+  async function deliverInviteEmail(email: string, projectName: string, token: string) {
+    if (supabase) {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: getInviteAuthRedirect(token),
+          shouldCreateUser: true,
+          data: {
+            invite_project: projectName,
+          },
+        },
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      return "sent";
+    }
+
+    openInviteEmailDraft(email, projectName, token);
+    return "draft";
+  }
+
+  async function createProjectInvites(project: Project, emails: string[]) {
+    const existingEmails = new Set([
+      ...project.teamMembers.map((member) => normalizeEmail(member.email)),
+      ...project.pendingInvites.map((invite) => normalizeEmail(invite.email)),
+    ]);
+    const inviteEmails = uniqueEmails(emails).filter(
+      (email) => !existingEmails.has(email),
+    );
+    const createdInvites: ProjectInvite[] = [];
+    let draftCount = 0;
+    let sentCount = 0;
+
+    for (const email of inviteEmails) {
+      if (supabase && authUser && isUuid(project.id)) {
+        const { data, error } = await supabase
+          .from("project_invitations")
+          .insert({
+            invited_by: authUser.id,
+            invited_email: email,
+            project_id: project.id,
+            role: "viewer",
+          })
+          .select("id,project_id,invited_email,token,status,created_at,accepted_at")
+          .single();
+
+        let inviteRow = data as RemoteInviteRow | null;
+
+        if (error) {
+          const { data: existingInvite, error: existingError } = await supabase
+            .from("project_invitations")
+            .select("id,project_id,invited_email,token,status,created_at,accepted_at")
+            .eq("project_id", project.id)
+            .eq("invited_email", email)
+            .eq("status", "pending")
+            .maybeSingle();
+
+          if (existingError || !existingInvite) {
+            throw new Error(error.message);
+          }
+
+          inviteRow = existingInvite as RemoteInviteRow;
+        }
+
+        if (!inviteRow) {
+          throw new Error("Project invite could not be created.");
+        }
+
+        const invite = mapRemoteInvite(inviteRow);
+        createdInvites.push(invite);
+        const delivery = await deliverInviteEmail(email, project.name, invite.token);
+        sentCount += delivery === "sent" ? 1 : 0;
+        draftCount += delivery === "draft" ? 1 : 0;
+      } else {
+        const invite: ProjectInvite = {
+          id: createId("invite"),
+          email,
+          token: createInviteToken(),
+          status: "pending",
+          invitedAt: new Date().toISOString(),
+        };
+        createdInvites.push(invite);
+        const delivery = await deliverInviteEmail(email, project.name, invite.token);
+        sentCount += delivery === "sent" ? 1 : 0;
+        draftCount += delivery === "draft" ? 1 : 0;
+      }
+    }
+
+    if (sentCount || draftCount) {
+      setProjectNotice(
+        sentCount
+          ? `${sentCount} invite email${sentCount === 1 ? "" : "s"} sent.`
+          : `${draftCount} invite email draft${draftCount === 1 ? "" : "s"} opened.`,
+      );
+    }
+
+    return createdInvites;
+  }
+
+  async function saveProjectFromDialog(values: ProjectDialogValues) {
+    const name = values.name.trim() || "New Project";
+    const creatingTeam = projectDialog?.mode === "create" && values.kind === "team";
+    const existingProject =
+      projectDialog?.mode === "edit"
+        ? projects.find((project) => project.id === projectDialog.projectId)
+        : null;
+    const convertingToTeam =
+      existingProject?.kind !== "team" && values.kind === "team";
+
+    if (
+      profilePlan === "free" &&
+      teamProjectCount >= 1 &&
+      (creatingTeam || convertingToTeam)
+    ) {
+      throw new Error("Free accounts can own one shared project.");
+    }
+
+    if (projectDialog?.mode === "edit") {
+      if (!existingProject || existingProject.currentUserRole !== "owner") {
+        throw new Error("Only the project admin can edit team members.");
+      }
+
+      const project = await ensureRemoteProject(existingProject);
+      const retainedMemberIds = new Set(values.retainedMemberIds);
+      const retainedInviteIds = new Set(values.retainedInviteIds);
+      const removedMemberIds = project.teamMembers
+        .filter(
+          (member) =>
+            member.role !== "owner" &&
+            (values.kind !== "team" || !retainedMemberIds.has(member.id)),
+        )
+        .map((member) => member.id);
+      const removedInviteIds = project.pendingInvites
+        .filter(
+          (invite) => values.kind !== "team" || !retainedInviteIds.has(invite.id),
+        )
+        .map((invite) => invite.id);
+
+      if (supabase && authUser && isUuid(project.id)) {
+        const { error } = await supabase
+          .from("projects")
+          .update({
+            board_columns: project.columns,
+            color: values.color,
+            description: values.description.trim(),
+            kind: values.kind,
+            name,
+          })
+          .eq("id", project.id);
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        if (removedMemberIds.length) {
+          const { error: memberError } = await supabase
+            .from("project_members")
+            .delete()
+            .eq("project_id", project.id)
+            .in("user_id", removedMemberIds);
+
+          if (memberError) {
+            throw new Error(memberError.message);
+          }
+        }
+
+        if (removedInviteIds.length) {
+          const { error: inviteError } = await supabase
+            .from("project_invitations")
+            .update({
+              revoked_at: new Date().toISOString(),
+              status: "revoked",
+            })
+            .eq("project_id", project.id)
+            .in("id", removedInviteIds);
+
+          if (inviteError) {
+            throw new Error(inviteError.message);
+          }
+        }
+      }
+
+      const teamMembers =
+        values.kind === "team"
+          ? normalizeProjectMembers(
+              project.teamMembers.filter(
+                (member) => member.role === "owner" || retainedMemberIds.has(member.id),
+              ),
+              1,
+            )
+          : project.teamMembers.filter((member) => member.role === "owner");
+      const retainedInvites =
+        values.kind === "team"
+          ? project.pendingInvites.filter((invite) => retainedInviteIds.has(invite.id))
+          : [];
+      const nextProject: Project = {
+        ...project,
+        name,
+        description: values.description.trim(),
+        kind: values.kind,
+        color: values.color,
+        teamMembers,
+        members: teamMembers.length,
+        pendingInvites: retainedInvites,
+      };
+      const newInvites =
+        values.kind === "team"
+          ? await createProjectInvites(nextProject, values.inviteEmails)
+          : [];
+      const finalProject = {
+        ...nextProject,
+        pendingInvites: [...nextProject.pendingInvites, ...newInvites],
+      };
+
+      setProjects((current) =>
+        current.map((item) => (item.id === finalProject.id ? finalProject : item)),
+      );
+      setActiveProjectId(finalProject.id);
+      setProjectDialog(null);
+      trackEvent("project_updated", {
+        kind: values.kind,
+        invited_members: newInvites.length,
+        removed_members: removedMemberIds.length,
+      });
+
+      if (supabase && authUser) {
+        await refreshRemoteWorkspace(finalProject.id);
+      }
+      return;
+    }
+
+    const owner = createCurrentUserMember(appUserId, appUserName, authEmail);
+    let project: Project = {
       id: createId("project"),
-      name: details.name.trim(),
-      description: details.description.trim(),
-      kind,
-      color: details.color,
-      members: 1 + details.memberEmails.length,
-      memberEmails: details.memberEmails,
+      ownerId: appUserId,
+      name,
+      description: values.description.trim(),
+      kind: values.kind,
+      color: values.color,
+      currentUserRole: "owner",
+      teamMembers: [owner],
+      members: 1,
+      pendingInvites: [],
       columns: createDefaultBoardColumns(),
+    };
+
+    if (supabase && authUser) {
+      const { data, error } = await supabase
+        .from("projects")
+        .insert({
+          board_columns: project.columns,
+          color: project.color,
+          description: project.description,
+          kind: project.kind,
+          name: project.name,
+          owner_id: authUser.id,
+        })
+        .select("id,owner_id,name,description,kind,color,board_columns")
+        .single();
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      const remoteProject = data as RemoteProjectRow;
+      project = {
+        ...project,
+        id: remoteProject.id,
+        ownerId: remoteProject.owner_id,
+      };
+    }
+
+    const newInvites =
+      values.kind === "team"
+        ? await createProjectInvites(project, values.inviteEmails)
+        : [];
+    project = {
+      ...project,
+      pendingInvites: newInvites,
     };
 
     setProjects((current) => [...current, project]);
@@ -1445,43 +2410,23 @@ export default function Home() {
       {
         id: createId("category"),
         projectId: project.id,
-        name: kind === "team" ? "Shared" : "Focus",
+        name: values.kind === "team" ? "Shared" : "Focus",
         color: project.color,
       },
     ]);
     setActiveProjectId(project.id);
     setSelectedTags([]);
     setTaskDrawerOpen(false);
+    setProjectDialog(null);
     setView("board");
-    setCreateProjectKind(null);
-    trackEvent("project_created", { kind });
-  }
-
-  function updateProject(projectId: string, details: ProjectDetails) {
-    const nextName = details.name.trim();
-
-    if (!nextName) {
-      return;
-    }
-
-    setProjects((current) =>
-      current.map((project) =>
-        project.id === projectId
-          ? {
-              ...project,
-              name: nextName,
-              description: details.description.trim(),
-              color: details.color,
-              memberEmails: details.memberEmails,
-              members: 1 + details.memberEmails.length,
-            }
-          : project,
-      ),
-    );
-    setProjectDialogId(null);
-    trackEvent("project_updated", {
-      field: "name_description_color_members",
+    trackEvent("project_created", {
+      kind: values.kind,
+      invited_members: newInvites.length,
     });
+
+    if (supabase && authUser) {
+      await refreshRemoteWorkspace(project.id);
+    }
   }
 
   function deleteProject(projectId: string) {
@@ -1515,7 +2460,7 @@ export default function Home() {
       setTaskDrawerOpen(false);
     }
 
-    setProjectDialogId(null);
+    setProjectDialog(null);
     trackEvent("project_deleted", { kind: project.kind });
   }
 
@@ -1531,12 +2476,15 @@ export default function Home() {
     } else {
       const project: Project = {
         id: createId("project"),
+        ownerId: appUserId,
         name: "My first board",
         description: "",
         kind: "personal",
         color: "#ff005e",
+        currentUserRole: "owner",
+        teamMembers: [createCurrentUserMember(appUserId, appUserName, authEmail)],
         members: 1,
-        memberEmails: [],
+        pendingInvites: [],
         columns: createDefaultBoardColumns(),
       };
 
@@ -1845,15 +2793,7 @@ export default function Home() {
     ((sessionDurationMinutes * 60 - remainingSeconds) /
       (sessionDurationMinutes * 60)) *
     100;
-  const authDisplayName =
-    readUserMetadata(authUser, "display_name") ||
-    readUserMetadata(authUser, "full_name") ||
-    authUser?.email?.split("@")[0] ||
-    (isSupabaseConfigured ? "Tockli user" : "Demo user");
-  const authEmail = authUser?.email ?? "Local demo workspace";
-  const authInitial = authDisplayName.trim().charAt(0).toUpperCase() || "T";
-  const appUserId = authUser?.id ?? currentUser.id;
-  const appUserName = authDisplayName || currentUser.name;
+  const isDarkTheme = settings.themeMode === "dark";
 
   async function signOut() {
     trackEvent("cta_clicked", {
@@ -1871,13 +2811,16 @@ export default function Home() {
 
   if (!authReady) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5] px-4 text-[#1a1c1b]">
-        <section className="w-full max-w-sm rounded-lg border border-[#e8e8e6] bg-white p-6 text-center shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
-          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[#ff005e] text-white">
+      <main
+        className="flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--foreground)]"
+        data-theme={settings.themeMode}
+      >
+        <section className="w-full max-w-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] p-6 text-center shadow-[var(--shadow-card)]">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[var(--accent)] text-white">
             <TimerReset size={22} aria-hidden="true" />
           </div>
           <h1 className="mt-5 text-xl font-semibold">Checking your session</h1>
-          <p className="mt-2 text-sm leading-6 text-[#62605b]">
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
             Tockli will open your workspace once login is confirmed.
           </p>
         </section>
@@ -1887,15 +2830,18 @@ export default function Home() {
 
   if (authMessage) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5] px-4 text-[#1a1c1b]">
-        <section className="w-full max-w-md rounded-lg border border-[#ffd3df] bg-white p-6 text-center shadow-[0_14px_40px_rgba(26,28,27,0.08)]">
-          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[#fff0f5] text-[#b90042]">
+      <main
+        className="flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--foreground)]"
+        data-theme={settings.themeMode}
+      >
+        <section className="w-full max-w-md rounded-lg border border-[var(--accent-border)] bg-[var(--surface)] p-6 text-center shadow-[var(--shadow-card)]">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--danger)]">
             <LogIn size={22} aria-hidden="true" />
           </div>
           <h1 className="mt-5 text-xl font-semibold">Login could not be verified</h1>
-          <p className="mt-2 text-sm leading-6 text-[#62605b]">{authMessage}</p>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{authMessage}</p>
           <Link
-            className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+            className="mt-5 inline-flex h-10 items-center justify-center rounded-md bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)]"
             href="/login?next=/app"
           >
             Return to login
@@ -1906,17 +2852,20 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
+    <main
+      className="min-h-screen bg-[var(--background)] text-[var(--foreground)]"
+      data-theme={settings.themeMode}
+    >
       <div className="flex min-h-screen">
-        <aside className="hidden w-[280px] shrink-0 border-r border-[#e8e8e6] bg-white lg:flex lg:flex-col">
-          <div className="border-b border-[#e8e8e6] p-6">
+        <aside className="hidden w-[280px] shrink-0 border-r border-[var(--border)] bg-[var(--surface)] lg:flex lg:flex-col">
+          <div className="border-b border-[var(--border)] p-6">
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
+              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--accent)] text-white">
                 <TimerReset size={20} aria-hidden="true" />
               </div>
               <div>
                 <h1 className="text-xl font-semibold">Tockli</h1>
-                <p className="text-xs text-[#6a6965]">Free plan</p>
+                <p className="text-xs text-[var(--muted)]">{planLabels[profilePlan]} plan</p>
               </div>
             </div>
 
@@ -1924,14 +2873,14 @@ export default function Home() {
 
           <div className="flex-1 overflow-y-auto p-4">
             <div className="mb-6">
-              <div className="mb-2 flex items-center justify-between px-2 text-xs font-semibold uppercase text-[#6a6965]">
+              <div className="mb-2 flex items-center justify-between px-2 text-xs font-semibold uppercase text-[var(--muted)]">
                 <span>Projects</span>
                 <button
                   aria-label="Create personal project"
                   title="Create personal project"
-                  className="rounded p-1 text-[#6a6965] transition hover:bg-[#f0f0ee] hover:text-[#ff005e]"
+                  className="rounded p-1 text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
                   type="button"
-                  onClick={() => openCreateProject("personal")}
+                  onClick={() => openCreateProjectDialog("personal")}
                 >
                   <Plus size={16} aria-hidden="true" />
                 </button>
@@ -1943,8 +2892,8 @@ export default function Home() {
                     key={project.id}
                     className={`group flex w-full items-center gap-1 rounded-md text-sm transition ${
                       activeProjectId === project.id
-                        ? "bg-[#f0f0ee] text-[#1a1c1b]"
-                        : "text-[#62605b] hover:bg-[#f4f4f2]"
+                        ? "bg-[var(--surface-hover)] text-[var(--foreground)]"
+                        : "text-[var(--muted)] hover:bg-[var(--surface-soft)]"
                     }`}
                   >
                     <button
@@ -1968,9 +2917,10 @@ export default function Home() {
                     <button
                       aria-label={`Manage ${project.name}`}
                       title={`Manage ${project.name}`}
-                      className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded text-[#62605b] opacity-0 transition hover:bg-white hover:text-[#ff005e] group-hover:opacity-100 focus:opacity-100"
+                      className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded text-[var(--muted)] opacity-0 transition enabled:hover:bg-[var(--surface)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-30 group-hover:opacity-100 focus:opacity-100"
+                      disabled={project.currentUserRole !== "owner"}
                       type="button"
-                      onClick={() => setProjectDialogId(project.id)}
+                      onClick={() => openEditProjectDialog(project.id)}
                     >
                       <MoreHorizontal size={16} aria-hidden="true" />
                     </button>
@@ -1989,8 +2939,8 @@ export default function Home() {
                     key={item.id}
                     className={`flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-2 text-sm transition ${
                       active
-                        ? "border-[#ff005e] bg-[#f0f0ee] text-[#1a1c1b]"
-                        : "border-transparent text-[#62605b] hover:bg-[#f4f4f2]"
+                        ? "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--foreground)]"
+                        : "border-transparent text-[var(--muted)] hover:bg-[var(--surface-soft)]"
                     }`}
                     type="button"
                     onClick={() => setView(item.id)}
@@ -2003,49 +2953,56 @@ export default function Home() {
             </nav>
           </div>
 
-          <div className="border-t border-[#e8e8e6] p-4">
-            <div className="rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3">
+          <div className="border-t border-[var(--border)] p-4">
+            <div className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-3">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Share2 size={16} aria-hidden="true" />
                 1 shared project
               </div>
-              <p className="mt-1 text-xs text-[#6a6965]">
-                {teamProjectCount}/1 used on Free
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                {profilePlan === "free"
+                  ? `${teamProjectCount}/1 used on Free`
+                  : `${teamProjectCount} shared projects`}
               </p>
             </div>
           </div>
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-20 border-b border-[#e8e8e6] bg-white/90 px-4 py-3 backdrop-blur md:px-8">
+          <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--surface-translucent)] px-4 py-3 backdrop-blur md:px-8">
             <div className="flex items-center justify-between gap-4">
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <button
                   aria-label="Open menu"
                   title="Open menu"
-                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] text-[#62605b] lg:hidden"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] text-[var(--muted)] lg:hidden"
                   type="button"
                 >
                   <Menu size={19} aria-hidden="true" />
                 </button>
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold uppercase text-[#6a6965]">
+                  <p className="text-xs font-semibold uppercase text-[var(--muted)]">
                     {activeProject?.kind === "team" ? "Shared Project" : "Personal Project"}
                   </p>
                   <h2 className="truncate text-2xl font-semibold">
                     {activeProject?.name ?? "Tockli"}
                   </h2>
+                  {activeProject?.currentUserRole === "viewer" ? (
+                    <p className="mt-0.5 text-xs font-semibold text-[var(--muted)]">
+                      Read-only access
+                    </p>
+                  ) : null}
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
                 {isRunning ? (
-                  <div className="flex h-11 min-w-0 overflow-hidden rounded-md border border-[#ffd3df] bg-[#fff0f5] text-[#b90042]">
+                  <div className="flex h-11 min-w-0 overflow-hidden rounded-md border border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--danger)]">
                     <button
                       aria-label={`Open Pomodoro for ${
                         focusTask?.title ?? "focus session"
                       }, ${formatTimer(remainingSeconds)} remaining`}
-                      className="flex min-w-0 items-center gap-2 px-3 text-left transition hover:bg-[#ffe5ed]"
+                      className="flex min-w-0 items-center gap-2 px-3 text-left transition hover:bg-[var(--accent-soft-hover)]"
                       type="button"
                       onClick={() => setView("timer")}
                     >
@@ -2066,7 +3023,7 @@ export default function Home() {
                     <button
                       aria-label="Cancel Pomodoro"
                       title="Cancel Pomodoro"
-                      className="flex w-9 shrink-0 items-center justify-center border-l border-[#ffd3df] transition hover:bg-[#ffd3df]"
+                      className="flex w-9 shrink-0 items-center justify-center border-l border-[var(--accent-border)] transition hover:bg-[var(--accent-border)]"
                       type="button"
                       onClick={() => {
                         setCancelStep("confirm");
@@ -2078,18 +3035,47 @@ export default function Home() {
                     </button>
                   </div>
                 ) : null}
-                <label className="hidden h-9 items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm text-[#6a6965] md:flex">
+                <label className="hidden h-9 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--muted)] md:flex">
                   <Search size={16} aria-hidden="true" />
                   <input
-                    className="w-44 bg-transparent outline-none placeholder:text-[#8b8984]"
+                    className="w-44 bg-transparent outline-none placeholder:text-[var(--subtle)]"
                     placeholder="Search tasks"
                     type="search"
                   />
                 </label>
+                {activeProjectCanEdit ? (
+                  <button
+                    aria-label="Edit project"
+                    title="Edit project"
+                    className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                    type="button"
+                    onClick={() => openEditProjectDialog()}
+                  >
+                    <Pencil size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
+                <button
+                  aria-label={isDarkTheme ? "Switch to light mode" : "Switch to dark mode"}
+                  title={isDarkTheme ? "Switch to light mode" : "Switch to dark mode"}
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                  type="button"
+                  onClick={() =>
+                    setSettings((current) => ({
+                      ...current,
+                      themeMode: current.themeMode === "dark" ? "light" : "dark",
+                    }))
+                  }
+                >
+                  {isDarkTheme ? (
+                    <Sun size={16} aria-hidden="true" />
+                  ) : (
+                    <Moon size={16} aria-hidden="true" />
+                  )}
+                </button>
                 <button
                   aria-label="Notifications"
                   title="Notifications"
-                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] bg-white text-[#62605b] transition hover:text-[#ff005e]"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:text-[var(--accent)]"
                   type="button"
                 >
                   <Bell size={17} aria-hidden="true" />
@@ -2097,7 +3083,7 @@ export default function Home() {
                 <button
                   aria-label="Sign out"
                   title="Sign out"
-                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] bg-white text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+                  className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                   type="button"
                   onClick={signOut}
                 >
@@ -2105,7 +3091,7 @@ export default function Home() {
                 </button>
                 <Link
                   aria-label="Manage account"
-                  className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-sm font-semibold text-white transition hover:bg-[#e00054] focus:outline-none focus:ring-2 focus:ring-[#ff005e] focus:ring-offset-2"
+                  className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--accent)] text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:ring-offset-2"
                   href="/account"
                   title={authEmail}
                 >
@@ -2124,8 +3110,8 @@ export default function Home() {
                     key={item.id}
                     className={`flex h-9 shrink-0 items-center gap-2 rounded-md px-3 text-sm ${
                       active
-                        ? "bg-[#ff005e] text-white"
-                        : "border border-[#e8e8e6] bg-white text-[#62605b]"
+                        ? "bg-[var(--accent)] text-white"
+                        : "border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)]"
                     }`}
                     type="button"
                     onClick={() => setView(item.id)}
@@ -2139,11 +3125,27 @@ export default function Home() {
           </header>
 
           <div className="flex-1 p-4 md:p-8">
+            {projectNotice ? (
+              <section className="mb-4 flex items-start gap-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-sm text-[var(--foreground-soft)]">
+                <Mail className="mt-0.5 shrink-0 text-[var(--accent)]" size={17} aria-hidden="true" />
+                <p className="min-w-0 flex-1 leading-6">{projectNotice}</p>
+                <button
+                  aria-label="Dismiss project notice"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
+                  type="button"
+                  onClick={() => setProjectNotice("")}
+                >
+                  <X size={15} aria-hidden="true" />
+                </button>
+              </section>
+            ) : null}
+
             {view === "board" ? (
               <>
                 <BoardView
                   activeGoal={activeGoal}
                   allTags={allProjectTags}
+                  canEdit={activeProjectCanEdit}
                   categories={activeProjectCategories}
                   columns={activeBoardColumns}
                   defaultFocusMinutes={settings.focusMinutes}
@@ -2182,6 +3184,7 @@ export default function Home() {
                     onCreateCategory={createCategory}
                     onDeleteTask={deleteTask}
                     onUpdateTask={updateTask}
+                    readOnly={!activeProjectCanEdit}
                     task={selectedTask}
                   />
                 ) : null}
@@ -2219,9 +3222,11 @@ export default function Home() {
             {view === "settings" ? (
               <SettingsView
                 activeProject={activeProject}
-                createProject={openCreateProject}
+                createProject={openCreateProjectDialog}
+                onEditProject={openEditProjectDialog}
                 onFocusMinutesChange={updateFocusMinutes}
                 onPreviewSound={previewFocusSound}
+                profilePlan={profilePlan}
                 settings={settings}
                 setSettings={setSettings}
                 teamProjectCount={teamProjectCount}
@@ -2256,22 +3261,29 @@ export default function Home() {
         />
       ) : null}
 
-      {projectDialogId ? (
-        <ProjectDetailsModal
+      {projectDialog ? (
+        <ProjectDialog
           canDelete={projects.length > 1}
-          deleteDisabled={isRunning && focusTask?.projectId === projectDialogId}
-          project={projects.find((project) => project.id === projectDialogId)}
-          onClose={() => setProjectDialogId(null)}
+          currentUserEmail={authEmail}
+          currentUserId={appUserId}
+          currentUserName={appUserName}
+          deleteDisabled={
+            projectDialog.projectId
+              ? isRunning && focusTask?.projectId === projectDialog.projectId
+              : false
+          }
+          mode={projectDialog.mode}
+          onClose={() => setProjectDialog(null)}
           onDelete={deleteProject}
-          onUpdate={updateProject}
-        />
-      ) : null}
-
-      {createProjectKind ? (
-        <CreateProjectModal
-          kind={createProjectKind}
-          onClose={() => setCreateProjectKind(null)}
-          onCreate={(details) => createProject(createProjectKind, details)}
+          onSave={saveProjectFromDialog}
+          planTier={profilePlan}
+          project={
+            projectDialog.mode === "edit"
+              ? projects.find((project) => project.id === projectDialog.projectId)
+              : undefined
+          }
+          teamProjectCount={teamProjectCount}
+          initialKind={projectDialog.kind ?? "personal"}
         />
       ) : null}
 
@@ -2312,7 +3324,7 @@ function CancelPomodoroModal({
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-[#1a1c1b]/55 p-4 backdrop-blur-[1px]"
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-[1px]"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -2322,24 +3334,24 @@ function CancelPomodoroModal({
       <section
         aria-label="Cancel Pomodoro"
         aria-modal="true"
-        className="w-full max-w-md rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_24px_70px_rgba(0,0,0,0.28)]"
+        className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-modal)]"
         role="dialog"
       >
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase text-[#b90042]">
+            <p className="text-xs font-semibold uppercase text-[var(--danger)]">
               {formatTimer(remainingSeconds)} remaining
             </p>
             <h2 className="mt-1 text-2xl font-bold">
               {step === "confirm" ? "Cancel Pomodoro?" : "Why are you cancelling?"}
             </h2>
-            <p className="mt-2 truncate text-sm text-[#62605b]">
+            <p className="mt-2 truncate text-sm text-[var(--muted)]">
               {focusTaskTitle}
             </p>
           </div>
           <button
             aria-label="Close cancellation dialog"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[#62605b] transition hover:bg-[#f0f0ee]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
             type="button"
             onClick={onClose}
           >
@@ -2349,20 +3361,20 @@ function CancelPomodoroModal({
 
         {step === "confirm" ? (
           <>
-            <p className="mt-5 text-sm leading-6 text-[#62605b]">
+            <p className="mt-5 text-sm leading-6 text-[var(--muted)]">
               The current Pomodoro will be discarded and no focus time will be
               added to the task.
             </p>
             <div className="mt-6 grid grid-cols-2 gap-2">
               <button
-                className="h-11 rounded-md border border-[#e8e8e6] bg-white text-sm font-semibold text-[#62605b] transition hover:bg-[#f9f9f7]"
+                className="h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--muted)] transition hover:bg-[var(--surface-muted)]"
                 type="button"
                 onClick={onClose}
               >
                 Keep working
               </button>
               <button
-                className="h-11 rounded-md bg-[#b90042] text-sm font-semibold text-white transition hover:bg-[#980037]"
+                className="h-11 rounded-md bg-[var(--danger-bg)] text-sm font-semibold text-white transition hover:bg-[var(--danger-bg-hover)]"
                 type="button"
                 onClick={() => onStepChange("reason")}
               >
@@ -2380,8 +3392,8 @@ function CancelPomodoroModal({
                     aria-pressed={reason === value}
                     className={`flex min-h-11 items-center gap-3 rounded-md border px-3 text-left text-sm font-semibold transition ${
                       reason === value
-                        ? "border-[#ff005e] bg-[#fff0f5] text-[#b90042]"
-                        : "border-[#e8e8e6] bg-white text-[#62605b] hover:border-[#ff005e]"
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                        : "border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--accent)]"
                     }`}
                     type="button"
                     onClick={() => onReasonChange(value)}
@@ -2389,8 +3401,8 @@ function CancelPomodoroModal({
                     <span
                       className={`h-3 w-3 shrink-0 rounded-full border ${
                         reason === value
-                          ? "border-[#ff005e] bg-[#ff005e]"
-                          : "border-[#c9c8c3] bg-white"
+                          ? "border-[var(--accent)] bg-[var(--accent)]"
+                          : "border-[var(--border-strong)] bg-[var(--surface)]"
                       }`}
                     />
                     {cancellationReasonLabels[value]}
@@ -2400,14 +3412,14 @@ function CancelPomodoroModal({
             </div>
             <div className="mt-6 grid grid-cols-2 gap-2">
               <button
-                className="h-11 rounded-md border border-[#e8e8e6] bg-white text-sm font-semibold text-[#62605b] transition hover:bg-[#f9f9f7]"
+                className="h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--muted)] transition hover:bg-[var(--surface-muted)]"
                 type="button"
                 onClick={() => onStepChange("confirm")}
               >
                 Back
               </button>
               <button
-                className="h-11 rounded-md bg-[#b90042] text-sm font-semibold text-white transition enabled:hover:bg-[#980037] disabled:cursor-not-allowed disabled:opacity-45"
+                className="h-11 rounded-md bg-[var(--danger-bg)] text-sm font-semibold text-white transition enabled:hover:bg-[var(--danger-bg-hover)] disabled:cursor-not-allowed disabled:opacity-45"
                 disabled={!reason}
                 type="button"
                 onClick={onCancel}
@@ -2422,10 +3434,504 @@ function CancelPomodoroModal({
   );
 }
 
+function ProjectDialog({
+  canDelete,
+  currentUserEmail,
+  currentUserId,
+  currentUserName,
+  deleteDisabled,
+  initialKind,
+  mode,
+  onClose,
+  onDelete,
+  onSave,
+  planTier,
+  project,
+  teamProjectCount,
+}: {
+  canDelete: boolean;
+  currentUserEmail: string;
+  currentUserId: string;
+  currentUserName: string;
+  deleteDisabled: boolean;
+  initialKind: ProjectKind;
+  mode: ProjectDialogMode;
+  onClose: () => void;
+  onDelete: (projectId: string) => void;
+  onSave: (values: ProjectDialogValues) => Promise<void>;
+  planTier: PlanTier;
+  project?: Project;
+  teamProjectCount: number;
+}) {
+  const owner =
+    project?.teamMembers.find((member) => member.role === "owner") ??
+    createCurrentUserMember(currentUserId, currentUserName, currentUserEmail);
+  const teamLocked =
+    planTier === "free" &&
+    teamProjectCount >= 1 &&
+    !(mode === "edit" && project?.kind === "team");
+  const [name, setName] = useState(
+    project?.name ?? (initialKind === "team" ? "Shared Project" : "New Project"),
+  );
+  const [description, setDescription] = useState(project?.description ?? "");
+  const [kind, setKind] = useState<ProjectKind>(
+    teamLocked && initialKind === "team" ? "personal" : project?.kind ?? initialKind,
+  );
+  const [color, setColor] = useState(
+    project?.color ?? (initialKind === "team" ? "#25a565" : "#ff005e"),
+  );
+  const [inviteInput, setInviteInput] = useState("");
+  const [inviteEmails, setInviteEmails] = useState<string[]>([]);
+  const [retainedMemberIds, setRetainedMemberIds] = useState(
+    () => new Set(project?.teamMembers.map((member) => member.id) ?? [owner.id]),
+  );
+  const [retainedInviteIds, setRetainedInviteIds] = useState(
+    () => new Set(project?.pendingInvites.map((invite) => invite.id) ?? []),
+  );
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const teamSectionDisabled = kind !== "team" || teamLocked;
+  const visibleMembers =
+    project?.teamMembers.filter(
+      (member) => member.role !== "owner" && retainedMemberIds.has(member.id),
+    ) ?? [];
+  const visibleInvites =
+    project?.pendingInvites.filter((invite) => retainedInviteIds.has(invite.id)) ?? [];
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [onClose]);
+
+  function addInviteEmails() {
+    if (teamSectionDisabled) {
+      return;
+    }
+
+    const emails = uniqueEmails(inviteInput.split(/[,\s]+/));
+    if (!emails.length) {
+      setMessage("Enter a valid email address.");
+      return;
+    }
+
+    const blockedEmails = new Set([
+      normalizeEmail(owner.email),
+      ...visibleMembers.map((member) => normalizeEmail(member.email)),
+      ...visibleInvites.map((invite) => normalizeEmail(invite.email)),
+      ...inviteEmails,
+    ]);
+    const nextEmails = emails.filter((email) => !blockedEmails.has(email));
+
+    if (!nextEmails.length) {
+      setMessage("Those people are already on the project or already invited.");
+      return;
+    }
+
+    setInviteEmails((current) => [...current, ...nextEmails]);
+    setInviteInput("");
+    setMessage("");
+  }
+
+  async function copyInviteLink(token: string) {
+    const inviteUrl = getInviteUrl(token);
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setMessage("Invite link copied.");
+    } catch {
+      setMessage(inviteUrl);
+    }
+  }
+
+  async function submitProject(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (kind === "team" && teamLocked) {
+      setMessage("Free accounts can own one shared project.");
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      await onSave({
+        color,
+        description,
+        inviteEmails: kind === "team" ? inviteEmails : [],
+        kind,
+        name,
+        retainedInviteIds: Array.from(retainedInviteIds),
+        retainedMemberIds: [owner.id, ...Array.from(retainedMemberIds)],
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Project could not be saved.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-[var(--overlay)] p-4 backdrop-blur-[1px] sm:items-center"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        aria-label={mode === "create" ? "Create project" : "Edit project"}
+        aria-modal="true"
+        className="my-auto w-full max-w-2xl rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-modal)] sm:p-6"
+        role="dialog"
+      >
+        <form onSubmit={submitProject}>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase text-[var(--danger)]">
+                {mode === "create" ? "New project" : "Project settings"}
+              </p>
+              <h2 className="mt-1 text-2xl font-bold">
+                {mode === "create" ? "Create project" : "Edit project"}
+              </h2>
+            </div>
+            <button
+              aria-label="Close project dialog"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
+              type="button"
+              onClick={onClose}
+            >
+              <X size={17} aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_180px]">
+            <label className="block">
+              <span className="text-sm font-semibold text-[var(--muted)]">
+                Project name
+              </span>
+              <input
+                autoFocus
+                className="mt-2 h-11 w-full rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
+
+            <div>
+              <span className="text-sm font-semibold text-[var(--muted)]">Color</span>
+              <div className="mt-2 flex h-11 items-center gap-2">
+                {projectColorOptions.map((option) => (
+                  <button
+                    key={option}
+                    aria-label={`Use project color ${option}`}
+                    aria-pressed={color === option}
+                    className={`h-8 w-8 rounded-full border-2 ${
+                      color === option ? "border-[var(--foreground)]" : "border-[var(--surface)]"
+                    } shadow-[0_0_0_1px_var(--border-strong)]`}
+                    style={{ backgroundColor: option }}
+                    type="button"
+                    onClick={() => setColor(option)}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <label className="mt-4 block">
+            <span className="text-sm font-semibold text-[var(--muted)]">
+              Description
+            </span>
+            <textarea
+              className="mt-2 min-h-20 w-full resize-none rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 py-2 text-sm leading-6 outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
+              placeholder="What is this project for?"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </label>
+
+          <div className="mt-5">
+            <span className="text-sm font-semibold text-[var(--muted)]">Project type</span>
+            <div
+              aria-label="Project type"
+              className="mt-2 grid grid-cols-2 gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-1"
+              role="group"
+            >
+              {(["personal", "team"] as ProjectKind[]).map((option) => {
+                const disabled = option === "team" && teamLocked;
+                const active = kind === option;
+                return (
+                  <button
+                    key={option}
+                    aria-pressed={active}
+                    className={`flex h-10 items-center justify-center gap-2 rounded text-sm font-semibold capitalize transition ${
+                      active
+                        ? "bg-[var(--foreground)] text-[var(--background)]"
+                        : "text-[var(--muted)] enabled:hover:bg-[var(--surface)]"
+                    } disabled:cursor-not-allowed disabled:opacity-45`}
+                    disabled={disabled}
+                    type="button"
+                    onClick={() => setKind(option)}
+                  >
+                    {option === "team" ? (
+                      <Users size={16} aria-hidden="true" />
+                    ) : (
+                      <UserCircle size={16} aria-hidden="true" />
+                    )}
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <section
+            className={`mt-5 rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-4 ${
+              teamSectionDisabled ? "opacity-55" : ""
+            }`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <UserPlus size={17} aria-hidden="true" />
+                  Team members
+                </div>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  {teamLocked
+                    ? "Free plan limit reached"
+                    : "One admin, invited users are read-only"}
+                </p>
+              </div>
+              <span className="rounded-md bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
+                {planLabels[planTier]} plan
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
+                  <ShieldCheck size={17} aria-hidden="true" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">{owner.name}</p>
+                  <p className="truncate text-xs text-[var(--muted)]">{owner.email}</p>
+                </div>
+                <span className="rounded bg-[var(--surface-hover)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
+                  {projectRoleLabels.owner}
+                </span>
+              </div>
+
+              {visibleMembers.map((member) => (
+                <div
+                  key={member.id}
+                  className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--surface)] p-3"
+                >
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--green-soft)] text-[var(--green)]">
+                    <Users size={16} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">{member.name}</p>
+                    <p className="truncate text-xs text-[var(--muted)]">{member.email}</p>
+                  </div>
+                  <span className="rounded bg-[var(--surface-hover)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
+                    {projectRoleLabels.viewer}
+                  </span>
+                  <button
+                    aria-label={`Remove ${member.email}`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+                    disabled={teamSectionDisabled}
+                    type="button"
+                    onClick={() =>
+                      setRetainedMemberIds((current) => {
+                        const next = new Set(current);
+                        next.delete(member.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+
+              {visibleInvites.map((invite) => (
+                <div
+                  key={invite.id}
+                  className="flex items-center gap-3 rounded-md border border-dashed border-[var(--border-strong)] bg-[var(--surface)] p-3"
+                >
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--amber-soft)] text-[var(--amber)]">
+                    <Mail size={16} aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">{invite.email}</p>
+                    <p className="truncate text-xs text-[var(--muted)]">Invite pending</p>
+                  </div>
+                  <button
+                    aria-label={`Copy invite link for ${invite.email}`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
+                    disabled={teamSectionDisabled}
+                    type="button"
+                    onClick={() => copyInviteLink(invite.token)}
+                  >
+                    <Copy size={15} aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label={`Revoke invite for ${invite.email}`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+                    disabled={teamSectionDisabled}
+                    type="button"
+                    onClick={() =>
+                      setRetainedInviteIds((current) => {
+                        const next = new Set(current);
+                        next.delete(invite.id);
+                        return next;
+                      })
+                    }
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+
+              {inviteEmails.map((email) => (
+                <div
+                  key={email}
+                  className="flex items-center gap-3 rounded-md border border-[var(--accent-border)] bg-[var(--accent-soft)] p-3"
+                >
+                  <Mail size={16} className="shrink-0 text-[var(--accent)]" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {email}
+                  </span>
+                  <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--danger)]">
+                    New invite
+                  </span>
+                  <button
+                    aria-label={`Remove invite for ${email}`}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--danger)] transition hover:bg-[var(--surface)]"
+                    disabled={teamSectionDisabled}
+                    type="button"
+                    onClick={() =>
+                      setInviteEmails((current) =>
+                        current.filter((item) => item !== email),
+                      )
+                    }
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <label className="sr-only" htmlFor="project-invite-email">
+                Invite email
+              </label>
+              <input
+                id="project-invite-email"
+                className="h-11 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)] disabled:cursor-not-allowed"
+                disabled={teamSectionDisabled}
+                placeholder="teammate@example.com"
+                type="email"
+                value={inviteInput}
+                onChange={(event) => setInviteInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addInviteEmails();
+                  }
+                }}
+              />
+              <button
+                className="flex h-11 items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--accent)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed"
+                disabled={teamSectionDisabled}
+                type="button"
+                onClick={addInviteEmails}
+              >
+                <Plus size={16} aria-hidden="true" />
+                Add
+              </button>
+            </div>
+          </section>
+
+          {message ? (
+            <p className="mt-4 rounded-md border border-[var(--accent-border)] bg-[var(--accent-soft)] p-3 text-sm font-semibold text-[var(--danger)]">
+              {message}
+            </p>
+          ) : null}
+
+          {mode === "edit" && project ? (
+            <div className="mt-5 rounded-lg border border-[var(--accent-border)] bg-[var(--accent-soft)] p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-[var(--danger)]">
+                    Delete project
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    {deleteDisabled
+                      ? "Stop the active Pomodoro before deleting this project."
+                      : canDelete
+                        ? "Tasks, notes, sessions, members, and invites will be removed."
+                        : "You need at least one project."}
+                  </p>
+                </div>
+                <button
+                  className="flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--accent-border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--danger)] transition enabled:hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!canDelete || deleteDisabled || saving}
+                  type="button"
+                  onClick={() => onDelete(project.id)}
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                  Delete
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-6 grid grid-cols-2 gap-2">
+            <button
+              className="h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--muted)] transition hover:bg-[var(--surface-muted)]"
+              disabled={saving}
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              className="flex h-11 items-center justify-center gap-2 rounded-md bg-[var(--accent)] text-sm font-semibold text-white transition enabled:hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={saving}
+              type="submit"
+            >
+              {saving ? (
+                <Clock3 className="animate-pulse motion-reduce:animate-none" size={16} aria-hidden="true" />
+              ) : (
+                <Check size={16} aria-hidden="true" />
+              )}
+              {mode === "create" ? "Create project" : "Save project"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
 function BoardView({
   activeGoal,
   allTags,
   archivedColumns,
+  canEdit,
   categories,
   columns,
   defaultFocusMinutes,
@@ -2451,6 +3957,7 @@ function BoardView({
   activeGoal: number;
   allTags: string[];
   archivedColumns: BoardColumn[];
+  canEdit: boolean;
   categories: TaskCategory[];
   columns: BoardColumn[];
   defaultFocusMinutes: number;
@@ -2598,24 +4105,24 @@ function BoardView({
 
   return (
     <div className="space-y-6">
-      <section className="rounded-lg border border-[#ffd3df] bg-[#fff0f5] p-4 text-[#1a1c1b]">
+      <section className="rounded-lg border border-[var(--accent-border)] bg-[var(--accent-soft)] p-4 text-[var(--foreground)]">
         <div className="flex flex-wrap items-center gap-4">
           <Gauge
-            className="shrink-0 text-[#ff005e]"
+            className="shrink-0 text-[var(--accent)]"
             size={28}
             aria-hidden="true"
           />
           <div className="min-w-32">
-            <p className="text-xs font-semibold uppercase text-[#b90042]">
+            <p className="text-xs font-semibold uppercase text-[var(--danger)]">
               Daily focus
             </p>
             <p className="mt-1 text-xl font-semibold">
               {todaysPomodoros}/{activeGoal} sessions
             </p>
           </div>
-          <div className="h-2 min-w-40 flex-1 overflow-hidden rounded-full bg-white">
+          <div className="h-2 min-w-40 flex-1 overflow-hidden rounded-full bg-[var(--surface)]">
             <div
-              className="h-full rounded-full bg-[#ff005e]"
+              className="h-full rounded-full bg-[var(--accent)]"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
@@ -2623,8 +4130,8 @@ function BoardView({
       </section>
 
       {allTags.length ? (
-        <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[#e8e8e6] bg-white p-3">
-          <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[#62605b]">
+        <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+          <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[var(--muted)]">
             <Hash size={16} aria-hidden="true" />
             Filter
           </div>
@@ -2636,8 +4143,8 @@ function BoardView({
                 key={tag}
                 className={`rounded-full border px-3 py-1 text-sm transition ${
                   active
-                    ? "border-[#ff005e] bg-[#fff0f5] text-[#b90042]"
-                    : "border-[#e8e8e6] bg-[#f9f9f7] text-[#62605b] hover:border-[#ff005e]"
+                    ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                    : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
                 }`}
                 type="button"
                 onClick={() => onToggleTag(tag)}
@@ -2653,7 +4160,7 @@ function BoardView({
         {archivedColumns.length ? (
           <button
             aria-expanded={archivedPanelOpen}
-            className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+            className="flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
             type="button"
             onClick={() => setArchivedPanelOpen((current) => !current)}
           >
@@ -2663,9 +4170,9 @@ function BoardView({
         ) : (
           <span />
         )}
-        {newColumnOpen ? (
+        {canEdit && newColumnOpen ? (
           <form
-            className="flex w-full max-w-sm items-center gap-2 rounded-lg border border-[#e8e8e6] bg-white p-2"
+            className="flex w-full max-w-sm items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2"
             onSubmit={(event) => {
               event.preventDefault();
               submitNewColumn();
@@ -2674,7 +4181,7 @@ function BoardView({
             <input
               autoFocus
               aria-label="New column name"
-              className="h-9 min-w-0 flex-1 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm outline-none transition focus:border-[#ff005e]"
+              className="h-9 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm outline-none transition focus:border-[var(--accent)]"
               placeholder="Column name"
               value={newColumnTitle}
               onChange={(event) => setNewColumnTitle(event.target.value)}
@@ -2688,7 +4195,7 @@ function BoardView({
             <button
               aria-label="Save column"
               title="Save column"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#ff005e] text-white transition hover:bg-[#e00054]"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent)] text-white transition hover:bg-[var(--accent-hover)]"
               type="submit"
             >
               <Check size={16} aria-hidden="true" />
@@ -2696,7 +4203,7 @@ function BoardView({
             <button
               aria-label="Cancel adding column"
               title="Cancel"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[#62605b] transition hover:bg-[#f0f0ee]"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
               type="button"
               onClick={() => {
                 setNewColumnTitle("");
@@ -2706,21 +4213,26 @@ function BoardView({
               <X size={16} aria-hidden="true" />
             </button>
           </form>
-        ) : (
+        ) : canEdit ? (
           <button
-            className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+            className="flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
             type="button"
             onClick={() => setNewColumnOpen(true)}
           >
             <Plus size={16} aria-hidden="true" />
             Add column
           </button>
+        ) : (
+          <span className="flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)]">
+            <Eye size={16} aria-hidden="true" />
+            Read-only
+          </span>
         )}
       </div>
 
       {archivedPanelOpen && archivedColumns.length ? (
-        <section className="rounded-lg border border-[#e8e8e6] bg-white p-3">
-          <p className="px-1 text-xs font-semibold uppercase text-[#8b8984]">
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+          <p className="px-1 text-xs font-semibold uppercase text-[var(--subtle)]">
             Archived columns
           </p>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
@@ -2732,17 +4244,18 @@ function BoardView({
               return (
                 <div
                   key={column.id}
-                  className="flex min-h-11 items-center gap-3 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3"
+                  className="flex min-h-11 items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3"
                 >
                   <span className="min-w-0 flex-1 truncate text-sm font-semibold">
                     {column.title}
                   </span>
-                  <span className="text-xs text-[#8b8984]">
+                  <span className="text-xs text-[var(--subtle)]">
                     {archivedTaskCount}{" "}
                     {archivedTaskCount === 1 ? "card" : "cards"}
                   </span>
                   <button
-                    className="h-8 rounded-md bg-white px-2 text-xs font-semibold text-[#62605b] transition hover:text-[#ff005e]"
+                    className="h-8 rounded-md bg-[var(--surface)] px-2 text-xs font-semibold text-[var(--muted)] transition enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-45"
+                    disabled={!canEdit}
                     type="button"
                     onClick={() => onRestoreColumn(column.id)}
                   >
@@ -2771,25 +4284,39 @@ function BoardView({
           return (
             <section
               key={column.id}
-              className={`group/column min-h-[360px] cursor-grab rounded-lg border p-3 transition active:cursor-grabbing ${
+              className={`group/column min-h-[360px] rounded-lg border p-3 transition ${
+                canEdit ? "cursor-grab active:cursor-grabbing" : ""
+              } ${
                 columnDropTargetId === column.id &&
                 draggedColumnId !== column.id
-                  ? "border-[#ff005e] bg-[#fff8fb] ring-2 ring-[#ff005e]/15"
+                  ? "border-[var(--accent)] bg-[var(--accent-wash)] ring-2 ring-[var(--accent-ring-soft)]"
                   : draggedTaskId
-                  ? "border-[#ff005e] bg-[#fff8fb]"
-                  : "border-[#e8e8e6] bg-[#f4f4f2]"
+                  ? "border-[var(--accent)] bg-[var(--accent-wash)]"
+                  : "border-[var(--border)] bg-[var(--surface-soft)]"
               }`}
-              draggable
+              draggable={canEdit}
               onDragEnter={() => {
+                if (!canEdit) {
+                  return;
+                }
+
                 if (draggedColumnId) {
                   setColumnDropTargetId(column.id);
                 }
               }}
               onDragOver={(event) => {
+                if (!canEdit) {
+                  return;
+                }
+
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
               }}
               onDragEnd={(event) => {
+                if (!canEdit) {
+                  return;
+                }
+
                 if ((event.target as HTMLElement).closest("article")) {
                   return;
                 }
@@ -2797,6 +4324,11 @@ function BoardView({
                 clearColumnDragState();
               }}
               onDragStart={(event) => {
+                if (!canEdit) {
+                  event.preventDefault();
+                  return;
+                }
+
                 const target = event.target as HTMLElement;
 
                 if (
@@ -2816,6 +4348,10 @@ function BoardView({
                 setColumnDropTargetId(column.id);
               }}
               onDrop={(event) => {
+                if (!canEdit) {
+                  return;
+                }
+
                 event.preventDefault();
                 const sourceColumnId = event.dataTransfer.getData(
                   "application/x-tockli-column",
@@ -2833,6 +4369,10 @@ function BoardView({
                 );
               }}
               onPointerUp={() => {
+                if (!canEdit) {
+                  return;
+                }
+
                 if (pointerColumnIdRef.current) {
                   onReorderColumn(pointerColumnIdRef.current, column.id);
                   clearColumnDragState();
@@ -2842,6 +4382,10 @@ function BoardView({
                 dropTask(column.id, pointerTaskIdRef.current ?? draggedTaskId);
               }}
               onPointerDown={(event) => {
+                if (!canEdit) {
+                  return;
+                }
+
                 const target = event.target as HTMLElement;
 
                 if (
@@ -2863,7 +4407,7 @@ function BoardView({
                     <input
                       autoFocus
                       aria-label={`Rename ${column.title} column`}
-                      className="h-9 min-w-0 flex-1 cursor-text rounded-md border border-[#ff005e] bg-white px-2 text-lg font-semibold outline-none ring-2 ring-[#ff005e]/15"
+                      className="h-9 min-w-0 flex-1 cursor-text rounded-md border border-[var(--accent)] bg-[var(--surface)] px-2 text-lg font-semibold outline-none ring-2 ring-[var(--accent-ring-soft)]"
                       value={columnTitleDraft}
                       onBlur={() => saveColumnRename(column)}
                       onChange={(event) =>
@@ -2887,39 +4431,40 @@ function BoardView({
                       {column.title}
                     </h3>
                   )}
-                  <span className="rounded bg-white px-2 py-1 text-xs text-[#6a6965]">
+                  <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs text-[var(--muted)]">
                     {columnTasks.length}
                   </span>
                 </div>
-                <div
-                  ref={
-                    openColumnMenuId === column.id ? columnMenuRef : undefined
-                  }
-                  className="relative ml-2 shrink-0"
-                  data-column-menu
-                >
-                  <button
-                    aria-expanded={openColumnMenuId === column.id}
-                    aria-label={`Open ${column.title} column menu`}
-                    title="Column actions"
-                    className="flex h-8 w-8 items-center justify-center rounded-md text-[#62605b] transition hover:bg-white hover:text-[#1a1c1b]"
-                    type="button"
-                    onClick={() =>
-                      setOpenColumnMenuId((current) =>
-                        current === column.id ? null : column.id,
-                      )
+                {canEdit ? (
+                  <div
+                    ref={
+                      openColumnMenuId === column.id ? columnMenuRef : undefined
                     }
+                    className="relative ml-2 shrink-0"
+                    data-column-menu
                   >
-                    <MoreHorizontal size={18} aria-hidden="true" />
-                  </button>
-                  {openColumnMenuId === column.id ? (
+                    <button
+                      aria-expanded={openColumnMenuId === column.id}
+                      aria-label={`Open ${column.title} column menu`}
+                      title="Column actions"
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface)] hover:text-[var(--foreground)]"
+                      type="button"
+                      onClick={() =>
+                        setOpenColumnMenuId((current) =>
+                          current === column.id ? null : column.id,
+                        )
+                      }
+                    >
+                      <MoreHorizontal size={18} aria-hidden="true" />
+                    </button>
+                    {openColumnMenuId === column.id ? (
                     <div
                       aria-label={`${column.title} column actions`}
-                      className="absolute right-0 top-9 z-30 w-52 rounded-lg border border-[#e8e8e6] bg-white p-1.5 shadow-[0_16px_40px_rgba(26,28,27,0.16)]"
+                      className="absolute right-0 top-9 z-30 w-52 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-float)]"
                       role="menu"
                     >
                       <button
-                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[#1a1c1b] transition hover:bg-[#f4f4f2]"
+                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[var(--foreground)] transition hover:bg-[var(--surface-soft)]"
                         role="menuitem"
                         type="button"
                         onClick={() => startColumnRename(column)}
@@ -2928,7 +4473,7 @@ function BoardView({
                         Rename column
                       </button>
                       <button
-                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[#1a1c1b] transition hover:bg-[#f4f4f2]"
+                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[var(--foreground)] transition hover:bg-[var(--surface-soft)]"
                         role="menuitem"
                         type="button"
                         onClick={() => {
@@ -2940,7 +4485,7 @@ function BoardView({
                         Add card
                       </button>
                       <button
-                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[#1a1c1b] transition enabled:hover:bg-[#f4f4f2] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[var(--foreground)] transition enabled:hover:bg-[var(--surface-soft)] disabled:cursor-not-allowed disabled:opacity-40"
                         disabled={columns.length === 1}
                         role="menuitem"
                         type="button"
@@ -2952,9 +4497,9 @@ function BoardView({
                         <Archive size={15} aria-hidden="true" />
                         Archive column
                       </button>
-                      <div className="my-1 border-t border-[#e8e8e6]" />
+                      <div className="my-1 border-t border-[var(--border)]" />
                       <button
-                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[#b90042] transition enabled:hover:bg-[#fff0f5] disabled:cursor-not-allowed disabled:opacity-40"
+                        className="flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-left text-sm text-[var(--danger)] transition enabled:hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-40"
                         disabled={columns.length === 1}
                         role="menuitem"
                         type="button"
@@ -2967,8 +4512,9 @@ function BoardView({
                         Delete column
                       </button>
                     </div>
-                  ) : null}
-                </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -2982,6 +4528,7 @@ function BoardView({
                     isFocusTask={isTimerRunning && focusTaskId === task.id}
                     isSelected={selectedTaskId === task.id}
                     isTimerRunning={isTimerRunning}
+                    canEdit={canEdit}
                     onDragEnd={clearDragState}
                     onDragStart={() => setDraggedTaskId(task.id)}
                     onPointerStart={beginPointerDrag}
@@ -2991,16 +4538,18 @@ function BoardView({
                   />
                 ))}
               </div>
-              <button
-                aria-label={`Add task to ${column.title}`}
-                title={`Add task to ${column.title}`}
-                className="mt-2 flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-semibold text-[#6a6965] transition hover:bg-white hover:text-[#ff005e]"
-                type="button"
-                onClick={() => onAddTask(column.id)}
-              >
-                <Plus size={14} aria-hidden="true" />
-                Add card
-              </button>
+              {canEdit ? (
+                <button
+                  aria-label={`Add task to ${column.title}`}
+                  title={`Add task to ${column.title}`}
+                  className="mt-2 flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-semibold text-[var(--muted)] transition hover:bg-[var(--surface)] hover:text-[var(--accent)]"
+                  type="button"
+                  onClick={() => onAddTask(column.id)}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  Add card
+                </button>
+              ) : null}
             </section>
           );
         })}
@@ -3009,7 +4558,7 @@ function BoardView({
 
       {pendingDeleteColumn ? (
         <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-[#1a1c1b]/55 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-[var(--overlay)] p-4 backdrop-blur-[1px]"
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setPendingDeleteColumnId(null);
@@ -3019,12 +4568,12 @@ function BoardView({
           <section
             aria-label="Delete column"
             aria-modal="true"
-            className="w-full max-w-md rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_24px_70px_rgba(0,0,0,0.28)]"
+            className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-modal)]"
             role="dialog"
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase text-[#b90042]">
+                <p className="text-xs font-semibold uppercase text-[var(--danger)]">
                   Delete column
                 </p>
                 <h2 className="mt-1 text-2xl font-bold">
@@ -3033,14 +4582,14 @@ function BoardView({
               </div>
               <button
                 aria-label="Close delete column dialog"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[#62605b] transition hover:bg-[#f0f0ee]"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
                 type="button"
                 onClick={() => setPendingDeleteColumnId(null)}
               >
                 <X size={17} aria-hidden="true" />
               </button>
             </div>
-            <p className="mt-4 text-sm leading-6 text-[#62605b]">
+            <p className="mt-4 text-sm leading-6 text-[var(--muted)]">
               {pendingDeleteTaskCount
                 ? `${pendingDeleteTaskCount} ${
                     pendingDeleteTaskCount === 1 ? "card" : "cards"
@@ -3049,14 +4598,14 @@ function BoardView({
             </p>
             <div className="mt-6 grid grid-cols-2 gap-2">
               <button
-                className="h-11 rounded-md border border-[#e8e8e6] bg-white text-sm font-semibold text-[#62605b] transition hover:bg-[#f9f9f7]"
+                className="h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--muted)] transition hover:bg-[var(--surface-muted)]"
                 type="button"
                 onClick={() => setPendingDeleteColumnId(null)}
               >
                 Keep column
               </button>
               <button
-                className="h-11 rounded-md bg-[#b90042] text-sm font-semibold text-white transition hover:bg-[#980037]"
+                className="h-11 rounded-md bg-[var(--danger-bg)] text-sm font-semibold text-white transition hover:bg-[var(--danger-bg-hover)]"
                 type="button"
                 onClick={() => {
                   onDeleteColumn(pendingDeleteColumn.id);
@@ -3074,6 +4623,7 @@ function BoardView({
 }
 
 function TaskCard({
+  canEdit,
   category,
   defaultFocusMinutes,
   isFocusTask,
@@ -3086,6 +4636,7 @@ function TaskCard({
   onStartTask,
   task,
 }: {
+  canEdit: boolean;
   category?: TaskCategory;
   defaultFocusMinutes: number;
   isFocusTask: boolean;
@@ -3125,14 +4676,16 @@ function TaskCard({
 
   return (
     <article
-      className={`relative cursor-grab overflow-visible rounded-lg border bg-white transition-[transform,box-shadow,border-color] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(26,28,27,0.10)] motion-reduce:transform-none active:cursor-grabbing ${
+      className={`relative overflow-visible rounded-lg border bg-[var(--surface)] transition-[transform,box-shadow,border-color] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[var(--shadow-hover)] motion-reduce:transform-none ${
+        canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+      } ${
         isFocusTask
-          ? "border-[#ff005e] shadow-[0_6px_18px_rgba(255,0,94,0.12)]"
+          ? "border-[var(--accent)] shadow-[var(--shadow-accent-soft)]"
           : isSelected
-          ? "border-[#ff005e] shadow-[0_6px_18px_rgba(255,0,94,0.08)]"
-          : "border-[#e8e8e6] hover:border-[#d4d3cf]"
+          ? "border-[var(--accent)] shadow-[var(--shadow-accent-soft)]"
+          : "border-[var(--border)] hover:border-[var(--border-strong)]"
       }`}
-      draggable
+      draggable={canEdit}
       style={{
         borderLeftColor: category?.color ?? undefined,
         borderLeftWidth: category ? 4 : undefined,
@@ -3140,17 +4693,26 @@ function TaskCard({
       onClick={() => onSelectTask(task.id)}
       onDragEnd={onDragEnd}
       onDragStart={(event) => {
+        if (!canEdit) {
+          event.preventDefault();
+          return;
+        }
+
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", task.id);
         onDragStart();
       }}
-      onPointerDown={() => onPointerStart(task.id)}
+      onPointerDown={() => {
+        if (canEdit) {
+          onPointerStart(task.id);
+        }
+      }}
     >
       <div className="p-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             {category ? (
-              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-[#62605b]">
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-[var(--muted)]">
                 <span
                   className="h-2 w-2 rounded-full"
                   style={{ backgroundColor: category.color }}
@@ -3170,7 +4732,7 @@ function TaskCard({
         </div>
 
         {task.description ? (
-          <p className="mt-1 line-clamp-1 text-xs leading-5 text-[#62605b]">
+          <p className="mt-1 line-clamp-1 text-xs leading-5 text-[var(--muted)]">
             {task.description}
           </p>
         ) : null}
@@ -3180,7 +4742,7 @@ function TaskCard({
             {task.tags.map((tag) => (
               <span
                 key={tag}
-                className="rounded bg-[#f0f0ee] px-1.5 py-0.5 text-[11px] text-[#62605b]"
+                className="rounded bg-[var(--surface-hover)] px-1.5 py-0.5 text-[11px] text-[var(--muted)]"
               >
                 #{tag}
               </span>
@@ -3188,7 +4750,7 @@ function TaskCard({
           </div>
         ) : null}
 
-        <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-[#62605b]">
+        <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-[var(--muted)]">
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             {task.spent > 0 ? (
               <span className="flex items-center gap-1">
@@ -3232,8 +4794,8 @@ function TaskCard({
             }
             className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-white transition ${
               isFocusTask
-                ? "bg-[#b90042]"
-                : "bg-[#ff005e] hover:bg-[#e00054]"
+                ? "bg-[var(--danger-bg)]"
+                : "bg-[var(--accent)] hover:bg-[var(--accent-hover)]"
             }`}
             type="button"
             onPointerDown={(event) => event.stopPropagation()}
@@ -3265,16 +4827,16 @@ function TaskCard({
           <div
             ref={timerMenuRef}
             aria-label={`Start Pomodoro for ${task.title}`}
-            className="absolute bottom-11 right-2 z-30 w-64 rounded-md border border-[#d8d7d3] bg-white p-3 text-left shadow-[0_16px_40px_rgba(26,28,27,0.22)]"
+            className="absolute bottom-11 right-2 z-30 w-64 rounded-md border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-left shadow-[var(--shadow-float-strong)]"
             role="dialog"
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-bold text-[#1a1c1b]">Pomodoro length</p>
+              <p className="text-sm font-bold text-[var(--foreground)]">Pomodoro length</p>
               <button
                 aria-label="Close timer options"
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[#62605b] transition hover:bg-[#f0f0ee]"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
                 type="button"
                 onClick={() => setTimerMenuOpen(false)}
               >
@@ -3289,8 +4851,8 @@ function TaskCard({
                   aria-pressed={timerMinutes === minutes}
                   className={`h-8 rounded-md border text-xs font-semibold transition ${
                     timerMinutes === minutes
-                      ? "border-[#ff005e] bg-[#fff0f5] text-[#b90042]"
-                      : "border-[#e8e8e6] bg-[#f9f9f7] text-[#62605b] hover:border-[#ff005e]"
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                      : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
                   }`}
                   type="button"
                   onClick={() => setTimerMinutes(minutes)}
@@ -3300,7 +4862,7 @@ function TaskCard({
               ))}
             </div>
 
-            <label className="mt-3 flex h-9 items-center rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-2 text-xs text-[#62605b] focus-within:border-[#ff005e]">
+            <label className="mt-3 flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 text-xs text-[var(--muted)] focus-within:border-[var(--accent)]">
               <span className="flex-1 font-semibold">Custom</span>
               <input
                 aria-label="Custom Pomodoro minutes"
@@ -3322,7 +4884,7 @@ function TaskCard({
             </label>
 
             <button
-              className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+              className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)]"
               type="button"
               onClick={() => {
                 onStartTask(task.id, timerMinutes);
@@ -3349,6 +4911,7 @@ function TaskDetailModal({
   onCreateCategory,
   onDeleteTask,
   onUpdateTask,
+  readOnly,
   task,
 }: {
   categories: TaskCategory[];
@@ -3360,6 +4923,7 @@ function TaskDetailModal({
   onCreateCategory: (name: string, color: string) => string;
   onDeleteTask: (taskId: string) => void;
   onUpdateTask: (taskId: string, updates: Partial<Task>) => void;
+  readOnly: boolean;
   task: Task;
 }) {
   const [newSubtaskTitle, setNewSubtaskTitle] = useState("");
@@ -3396,6 +4960,10 @@ function TaskDetailModal({
   }, [onClose]);
 
   function updateSubtask(subtaskId: string, updates: Partial<SubTask>) {
+    if (readOnly) {
+      return;
+    }
+
     onUpdateTask(task.id, {
       subtasks: task.subtasks.map((subtask) =>
         subtask.id === subtaskId ? { ...subtask, ...updates } : subtask,
@@ -3404,12 +4972,20 @@ function TaskDetailModal({
   }
 
   function removeSubtask(subtaskId: string) {
+    if (readOnly) {
+      return;
+    }
+
     onUpdateTask(task.id, {
       subtasks: task.subtasks.filter((subtask) => subtask.id !== subtaskId),
     });
   }
 
   function addSubtask() {
+    if (readOnly) {
+      return;
+    }
+
     const title = newSubtaskTitle.trim();
 
     if (!title) {
@@ -3430,6 +5006,10 @@ function TaskDetailModal({
   }
 
   function addCategory() {
+    if (readOnly) {
+      return;
+    }
+
     const name = newCategoryName.trim();
 
     if (!name) {
@@ -3442,6 +5022,10 @@ function TaskDetailModal({
   }
 
   function addComment() {
+    if (readOnly) {
+      return;
+    }
+
     const body = newComment.trim();
 
     if (!body) {
@@ -3465,7 +5049,7 @@ function TaskDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[#1a1c1b]/55 p-4 backdrop-blur-[1px] sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[var(--overlay)] p-4 backdrop-blur-[1px] sm:items-center"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -3475,7 +5059,7 @@ function TaskDetailModal({
       <section
         aria-label="Card details"
         aria-modal="true"
-        className="my-auto max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg border border-[#e8e8e6] bg-white p-5 shadow-[0_24px_70px_rgba(0,0,0,0.28)] sm:p-6"
+        className="my-auto max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-modal)] sm:p-6"
         role="dialog"
         style={{
           borderTopColor: selectedCategory?.color,
@@ -3483,13 +5067,13 @@ function TaskDetailModal({
         }}
       >
         <div className="mb-3 flex items-center justify-between gap-4">
-          <span className="flex h-8 items-center rounded-md border border-[#e8e8e6] bg-[#f0f0ee] px-2 text-xs font-semibold text-[#62605b]">
+          <span className="flex h-8 items-center rounded-md border border-[var(--border)] bg-[var(--surface-hover)] px-2 text-xs font-semibold text-[var(--muted)]">
             {columns.find((column) => column.id === task.status)?.title ??
               task.status}
           </span>
           <button
             aria-label="Close card details"
-            className="flex h-9 w-9 items-center justify-center rounded-md text-[#62605b] transition hover:bg-[#f0f0ee] hover:text-[#ff005e]"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
             type="button"
             onClick={onClose}
           >
@@ -3500,7 +5084,12 @@ function TaskDetailModal({
         <textarea
           aria-label="Card title"
           autoFocus={task.title === "Untitled task"}
-          className="-mx-1 min-h-20 w-[calc(100%+0.5rem)] resize-none overflow-hidden rounded-md bg-transparent px-1 py-1 text-4xl font-bold leading-tight outline-none transition hover:bg-[#f4f4f2] focus:bg-[#f9f9f7] focus:ring-2 focus:ring-[#ff005e]/30 sm:text-5xl"
+          className={`-mx-1 min-h-20 w-[calc(100%+0.5rem)] resize-none overflow-hidden rounded-md bg-transparent px-1 py-1 text-4xl font-bold leading-tight outline-none transition sm:text-5xl ${
+            readOnly
+              ? "cursor-default"
+              : "hover:bg-[var(--surface-soft)] focus:bg-[var(--surface-muted)] focus:ring-2 focus:ring-[var(--accent-ring)]"
+          }`}
+          readOnly={readOnly}
           rows={2}
           value={task.title}
           onFocus={(event) => {
@@ -3523,7 +5112,8 @@ function TaskDetailModal({
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             aria-expanded={activeMetaEditor === "category"}
-            className="flex h-9 max-w-full items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm font-semibold text-[#62605b] transition hover:border-[#c9c8c3] hover:bg-[#f0f0ee]"
+            className="flex h-9 max-w-full items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--border-strong)] enabled:hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-65"
+            disabled={readOnly}
             type="button"
             onClick={() =>
               setActiveMetaEditor((current) =>
@@ -3546,7 +5136,8 @@ function TaskDetailModal({
 
           <button
             aria-expanded={activeMetaEditor === "date"}
-            className="flex h-9 items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm font-semibold text-[#62605b] transition hover:border-[#c9c8c3] hover:bg-[#f0f0ee]"
+            className="flex h-9 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--border-strong)] enabled:hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-65"
+            disabled={readOnly}
             type="button"
             onClick={() =>
               setActiveMetaEditor((current) =>
@@ -3560,7 +5151,8 @@ function TaskDetailModal({
 
           <button
             aria-expanded={activeMetaEditor === "tags"}
-            className="flex h-9 max-w-full items-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm font-semibold text-[#62605b] transition hover:border-[#c9c8c3] hover:bg-[#f0f0ee]"
+            className="flex h-9 max-w-full items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--border-strong)] enabled:hover:bg-[var(--surface-hover)] disabled:cursor-not-allowed disabled:opacity-65"
+            disabled={readOnly}
             type="button"
             onClick={() =>
               setActiveMetaEditor((current) =>
@@ -3578,9 +5170,10 @@ function TaskDetailModal({
 
           <select
             aria-label="Priority"
-            className={`h-9 rounded-md border px-3 text-sm font-semibold capitalize outline-none transition focus:ring-2 focus:ring-[#ff005e]/30 ${priorityClass(
+            className={`h-9 rounded-md border px-3 text-sm font-semibold capitalize outline-none transition focus:ring-2 focus:ring-[var(--accent-ring)] ${priorityClass(
               task.priority,
             )}`}
+            disabled={readOnly}
             value={task.priority}
             onChange={(event) =>
               onUpdateTask(task.id, {
@@ -3595,14 +5188,15 @@ function TaskDetailModal({
         </div>
 
         {activeMetaEditor === "category" ? (
-          <div className="mt-3 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-4">
+          <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4">
             <label className="block">
-              <span className="mb-2 block text-xs font-semibold uppercase text-[#8b8984]">
+              <span className="mb-2 block text-xs font-semibold uppercase text-[var(--subtle)]">
                 Category
               </span>
               <select
                 autoFocus
-                className="h-10 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition focus:border-[#ff005e]"
+                className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                disabled={readOnly}
                 value={task.categoryId ?? ""}
                 onChange={(event) =>
                   onUpdateTask(task.id, {
@@ -3619,10 +5213,11 @@ function TaskDetailModal({
               </select>
             </label>
 
-            <div className="mt-4 space-y-3 border-t border-[#e8e8e6] pt-4">
+            <div className="mt-4 space-y-3 border-t border-[var(--border)] pt-4">
               <input
                 aria-label="New category name"
-                className="h-10 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
+                className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
+                disabled={readOnly}
                 placeholder="Create a new category"
                 value={newCategoryName}
                 onChange={(event) => setNewCategoryName(event.target.value)}
@@ -3638,18 +5233,20 @@ function TaskDetailModal({
                   <button
                     key={color}
                     aria-label={`Use category color ${color}`}
+                    disabled={readOnly}
                     className={`h-8 w-8 rounded-full border-2 ${
                       newCategoryColor === color
-                        ? "border-[#1a1c1b]"
-                        : "border-white"
-                    } shadow-[0_0_0_1px_#e8e8e6]`}
+                        ? "border-[var(--foreground)]"
+                        : "border-[var(--surface)]"
+                    } shadow-[0_0_0_1px_var(--border)]`}
                     style={{ backgroundColor: color }}
                     type="button"
                     onClick={() => setNewCategoryColor(color)}
                   />
                 ))}
                 <button
-                  className="ml-auto h-9 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+                  className="ml-auto h-9 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={readOnly}
                   type="button"
                   onClick={addCategory}
                 >
@@ -3661,14 +5258,15 @@ function TaskDetailModal({
         ) : null}
 
         {activeMetaEditor === "date" ? (
-          <div className="mt-3 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-4">
+          <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4">
             <label className="block">
-              <span className="mb-2 block text-xs font-semibold uppercase text-[#8b8984]">
+              <span className="mb-2 block text-xs font-semibold uppercase text-[var(--subtle)]">
                 Due date
               </span>
               <input
                 autoFocus
-                className="h-10 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition focus:border-[#ff005e]"
+                className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                disabled={readOnly}
                 type="date"
                 value={toDateInputValue(task.due)}
                 onChange={(event) =>
@@ -3685,14 +5283,15 @@ function TaskDetailModal({
         ) : null}
 
         {activeMetaEditor === "tags" ? (
-          <div className="mt-3 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-4">
+          <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4">
             <label className="block">
-              <span className="mb-2 block text-xs font-semibold uppercase text-[#8b8984]">
+              <span className="mb-2 block text-xs font-semibold uppercase text-[var(--subtle)]">
                 Tags
               </span>
               <input
                 autoFocus
-                className="h-10 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
+                className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
+                disabled={readOnly}
                 placeholder="#writing #research"
                 value={task.tags.map((tag) => `#${tag}`).join(" ")}
                 onChange={(event) =>
@@ -3710,7 +5309,7 @@ function TaskDetailModal({
           </div>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[#62605b]">
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-[var(--muted)]">
           {task.spent > 0 ? (
             <span className="flex items-center gap-1.5">
               <Clock3 size={14} aria-hidden="true" />
@@ -3735,42 +5334,45 @@ function TaskDetailModal({
         <div>
           <div className="flex items-center justify-between gap-3">
             <label
-              className="text-sm font-semibold text-[#62605b]"
+              className="text-sm font-semibold text-[var(--muted)]"
               htmlFor="card-description"
             >
               Description
             </label>
-            <button
-              className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[#e00054] disabled:bg-[#25a565]"
-              disabled={!hasUnsavedDescription}
-              type="button"
-              onClick={() =>
-                onUpdateTask(task.id, { description: descriptionDraft })
-              }
-            >
-              <Check size={15} aria-hidden="true" />
-              {hasUnsavedDescription ? "Save description" : "Saved"}
-            </button>
+            {readOnly ? null : (
+              <button
+                className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[var(--accent-hover)] disabled:bg-[var(--green)]"
+                disabled={!hasUnsavedDescription}
+                type="button"
+                onClick={() =>
+                  onUpdateTask(task.id, { description: descriptionDraft })
+                }
+              >
+                <Check size={15} aria-hidden="true" />
+                {hasUnsavedDescription ? "Save description" : "Saved"}
+              </button>
+            )}
           </div>
           <textarea
             id="card-description"
-            className="mt-2 min-h-28 w-full resize-none rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3 text-sm leading-6 outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
+            className="mt-2 min-h-28 w-full resize-none rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-sm leading-6 outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)] read-only:cursor-default"
             placeholder="Add context, links, or notes for this task."
+            readOnly={readOnly}
             value={descriptionDraft}
             onChange={(event) => setDescriptionDraft(event.target.value)}
           />
-          {hasUnsavedDescription ? (
-            <p className="mt-1 text-xs text-[#b77900]">
+          {!readOnly && hasUnsavedDescription ? (
+            <p className="mt-1 text-xs text-[var(--amber)]">
               Save the description before closing the card.
             </p>
           ) : null}
         </div>
 
-        <details className="group rounded-lg border border-[#e8e8e6] bg-[#fdfdfb]">
-          <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold text-[#62605b] [&::-webkit-details-marker]:hidden">
+        <details className="group rounded-lg border border-[var(--border)] bg-[var(--surface-raised)]">
+          <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold text-[var(--muted)] [&::-webkit-details-marker]:hidden">
             <ListChecks size={16} aria-hidden="true" />
             <span className="flex-1">Subtasks</span>
-            <span className="rounded bg-white px-2 py-1 text-xs font-semibold text-[#62605b]">
+            <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
               {completedSubtasks}/{task.subtasks.length}
             </span>
             <ChevronDown
@@ -3780,12 +5382,12 @@ function TaskDetailModal({
             />
           </summary>
 
-          <div className="border-t border-[#e8e8e6] p-4">
+          <div className="border-t border-[var(--border)] p-4">
             <div className="space-y-2">
               {task.subtasks.map((subtask) => (
               <div
                 key={subtask.id}
-                className="flex items-center gap-2 rounded-md border border-[#e8e8e6] bg-white p-2"
+                className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] p-2"
               >
                 <button
                   aria-label={
@@ -3793,11 +5395,12 @@ function TaskDetailModal({
                       ? `Mark ${subtask.title} incomplete`
                       : `Mark ${subtask.title} complete`
                   }
-                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${
+                  className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border disabled:cursor-not-allowed disabled:opacity-55 ${
                     subtask.done
-                      ? "border-[#25a565] bg-[#edf8f1] text-[#25a565]"
-                      : "border-[#d8d7d3] text-[#8b8984]"
+                      ? "border-[var(--green)] bg-[var(--green-soft)] text-[var(--green)]"
+                      : "border-[var(--border-strong)] text-[var(--subtle)]"
                   }`}
+                  disabled={readOnly}
                   type="button"
                   onClick={() => updateSubtask(subtask.id, { done: !subtask.done })}
                 >
@@ -3810,8 +5413,9 @@ function TaskDetailModal({
                 <input
                   aria-label={`Subtask ${subtask.title}`}
                   className={`min-w-0 flex-1 bg-transparent text-sm outline-none ${
-                    subtask.done ? "text-[#8b8984] line-through" : ""
+                    subtask.done ? "text-[var(--subtle)] line-through" : ""
                   }`}
+                  readOnly={readOnly}
                   value={subtask.title}
                   onChange={(event) =>
                     updateSubtask(subtask.id, {
@@ -3821,7 +5425,8 @@ function TaskDetailModal({
                 />
                 <button
                   aria-label={`Delete subtask ${subtask.title}`}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[#8b8984] transition hover:bg-[#fff0f5] hover:text-[#ff005e]"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--subtle)] transition enabled:hover:bg-[var(--accent-soft)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={readOnly}
                   type="button"
                   onClick={() => removeSubtask(subtask.id)}
                 >
@@ -3831,38 +5436,40 @@ function TaskDetailModal({
               ))}
             </div>
 
-          <form
-            className="mt-3 flex gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              addSubtask();
-            }}
-          >
-            <input
-              aria-label="New subtask"
-              className="h-10 min-w-0 flex-1 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
-              placeholder="Add subtask"
-              value={newSubtaskTitle}
-              onChange={(event) => setNewSubtaskTitle(event.target.value)}
-            />
-            <button
-              aria-label="Add subtask"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-[#ff005e] text-white transition hover:bg-[#e00054]"
-              type="submit"
+          {readOnly ? null : (
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                addSubtask();
+              }}
             >
-              <Plus size={17} aria-hidden="true" />
-            </button>
-          </form>
+              <input
+                aria-label="New subtask"
+                className="h-10 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
+                placeholder="Add subtask"
+                value={newSubtaskTitle}
+                onChange={(event) => setNewSubtaskTitle(event.target.value)}
+              />
+              <button
+                aria-label="Add subtask"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-[var(--accent)] text-white transition hover:bg-[var(--accent-hover)]"
+                type="submit"
+              >
+                <Plus size={17} aria-hidden="true" />
+              </button>
+            </form>
+          )}
           </div>
         </details>
 
-        <section className="rounded-lg border border-[#e8e8e6] bg-[#fdfdfb] p-4">
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#62605b]">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--muted)]">
               <MessageSquare size={16} aria-hidden="true" />
               Comments and activity
             </div>
-            <span className="rounded bg-white px-2 py-1 text-xs font-semibold text-[#62605b]">
+            <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
               {task.comments.length}
             </span>
           </div>
@@ -3887,13 +5494,13 @@ function TaskDetailModal({
                       {comment.authorName}
                     </span>
                     <time
-                      className="text-xs text-[#8b8984]"
+                      className="text-xs text-[var(--subtle)]"
                       dateTime={comment.createdAt}
                     >
                       {formatCommentDate(comment.createdAt)}
                     </time>
                   </div>
-                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-[#3f403d]">
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-[var(--foreground-soft)]">
                     {comment.body}
                   </p>
                 </div>
@@ -3901,52 +5508,59 @@ function TaskDetailModal({
             ))}
           </div>
 
-          <form
-            className="mt-4 flex items-end gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              addComment();
-            }}
-          >
-            <textarea
-              aria-label="Write a comment"
-              className="min-h-20 min-w-0 flex-1 resize-none rounded-md border border-[#e8e8e6] bg-white p-3 text-sm leading-5 outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
-              placeholder="Write a comment..."
-              value={newComment}
-              onChange={(event) => setNewComment(event.target.value)}
-            />
-            <button
-              aria-label="Add comment"
-              className="flex h-10 items-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition hover:bg-[#e00054]"
-              type="submit"
+          {readOnly ? null : (
+            <form
+              className="mt-4 flex items-end gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                addComment();
+              }}
             >
-              <Send size={15} aria-hidden="true" />
-              Comment
-            </button>
-          </form>
+              <textarea
+                aria-label="Write a comment"
+                className="min-h-20 min-w-0 flex-1 resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 text-sm leading-5 outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
+                placeholder="Write a comment..."
+                value={newComment}
+                onChange={(event) => setNewComment(event.target.value)}
+              />
+              <button
+                aria-label="Add comment"
+                className="flex h-10 items-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)]"
+                type="submit"
+              >
+                <Send size={15} aria-hidden="true" />
+                Comment
+              </button>
+            </form>
+          )}
         </section>
 
-        <div className="border-t border-[#e8e8e6] pt-5">
-          {deleteDisabled ? (
-            <div className="flex items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3 text-sm font-semibold text-[#62605b]">
+        <div className="border-t border-[var(--border)] pt-5">
+          {readOnly ? (
+            <div className="flex items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-sm font-semibold text-[var(--muted)]">
+              <Eye size={16} aria-hidden="true" />
+              Read-only project
+            </div>
+          ) : deleteDisabled ? (
+            <div className="flex items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-3 text-sm font-semibold text-[var(--muted)]">
               <Clock3 size={16} aria-hidden="true" />
               Pomodoro in progress
             </div>
           ) : confirmDelete ? (
-            <div className="space-y-3 rounded-lg border border-[#ffd3df] bg-[#fff0f5] p-3">
-              <p className="text-sm font-semibold text-[#b90042]">
+            <div className="space-y-3 rounded-lg border border-[var(--accent-border)] bg-[var(--accent-soft)] p-3">
+              <p className="text-sm font-semibold text-[var(--danger)]">
                 Delete this task?
               </p>
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  className="h-10 rounded-md border border-[#e8e8e6] bg-white text-sm font-semibold text-[#62605b]"
+                  className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--muted)]"
                   type="button"
                   onClick={() => setConfirmDelete(false)}
                 >
                   Cancel
                 </button>
                 <button
-                  className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#ff005e] text-sm font-semibold text-white"
+                  className="flex h-10 items-center justify-center gap-2 rounded-md bg-[var(--accent)] text-sm font-semibold text-white"
                   type="button"
                   onClick={() => onDeleteTask(task.id)}
                 >
@@ -3957,7 +5571,7 @@ function TaskDetailModal({
             </div>
           ) : (
             <button
-              className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[#ffd3df] bg-white text-sm font-semibold text-[#b90042] transition hover:bg-[#fff0f5]"
+              className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--accent-border)] bg-[var(--surface)] text-sm font-semibold text-[var(--danger)] transition hover:bg-[var(--accent-soft)]"
               type="button"
               onClick={() => setConfirmDelete(true)}
             >
@@ -4001,10 +5615,10 @@ function TimerView({
   const timerLocked = isRunning || timerProgress > 0;
 
   return (
-    <div className="grid min-h-[640px] gap-6 rounded-lg border border-[#e8e8e6] bg-white p-4 text-[#1a1c1b] md:p-8 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="grid min-h-[640px] gap-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-[var(--foreground)] md:p-8 xl:grid-cols-[minmax(0,1fr)_420px]">
       <section className="flex min-h-[520px] flex-col items-center justify-center">
         <div className="w-full max-w-md text-center">
-          <p className="text-sm font-semibold uppercase text-[#b90042]">
+          <p className="text-sm font-semibold uppercase text-[var(--danger)]">
             Focus task
           </p>
           <h3 className="mt-2 text-3xl font-bold leading-tight">
@@ -4020,8 +5634,8 @@ function TimerView({
               aria-pressed={timerMinutes === minutes}
               className={`h-9 min-w-11 rounded-md border px-3 text-sm font-semibold transition ${
                 timerMinutes === minutes
-                  ? "border-[#ff005e] bg-[#fff0f5] text-[#b90042]"
-                  : "border-[#e8e8e6] bg-white text-[#62605b] hover:border-[#ff005e]"
+                  ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                  : "border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--accent)]"
               } disabled:cursor-not-allowed disabled:opacity-45`}
               disabled={timerLocked}
               type="button"
@@ -4030,7 +5644,7 @@ function TimerView({
               {minutes}
             </button>
           ))}
-          <label className="flex h-9 items-center rounded-md border border-[#e8e8e6] bg-white px-2 text-sm text-[#62605b] focus-within:border-[#ff005e]">
+          <label className="flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-sm text-[var(--muted)] focus-within:border-[var(--accent)]">
             <span className="sr-only">Custom focus minutes</span>
             <input
               aria-label="Custom focus minutes"
@@ -4059,7 +5673,7 @@ function TimerView({
               cy="50"
               fill="none"
               r="45"
-              stroke="#e8e8e6"
+              stroke="var(--border)"
               strokeWidth="2"
             />
             <circle
@@ -4067,7 +5681,7 @@ function TimerView({
               cy="50"
               fill="none"
               r="45"
-              stroke="#ff4f74"
+              stroke="var(--accent)"
               strokeDasharray={circumference}
               strokeDashoffset={dashOffset}
               strokeLinecap="round"
@@ -4078,7 +5692,7 @@ function TimerView({
             <div className="text-6xl font-semibold sm:text-7xl">
               {formatTimer(remainingSeconds)}
             </div>
-            <div className="mt-4 inline-flex rounded-full border border-[#ffd3df] bg-[#fff0f5] px-4 py-2 text-sm font-semibold text-[#b90042]">
+            <div className="mt-4 inline-flex rounded-full border border-[var(--accent-border)] bg-[var(--accent-soft)] px-4 py-2 text-sm font-semibold text-[var(--danger)]">
               {timerMinutes} min focus
             </div>
           </div>
@@ -4100,7 +5714,7 @@ function TimerView({
                   ? "Start Pomodoro"
                   : "Choose a task from the board"
             }
-            className="flex h-20 w-20 items-center justify-center rounded-full bg-[#ff005e] text-white shadow-[0_12px_36px_rgba(255,0,94,0.22)] transition hover:bg-[#e00054] disabled:cursor-not-allowed disabled:bg-[#d8d7d3] disabled:shadow-none"
+            className="flex h-20 w-20 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-[var(--shadow-accent)] transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:bg-[var(--border-strong)] disabled:shadow-none"
             disabled={isRunning || !selectedTask}
             type="button"
             onClick={onStart}
@@ -4119,9 +5733,9 @@ function TimerView({
       </section>
 
       <aside className="flex flex-col gap-4">
-        <section className="flex min-h-[520px] flex-col rounded-lg border border-[#e8e8e6] bg-[#fdfdfb] p-4">
+        <section className="flex min-h-[520px] flex-col rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#62605b]">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[var(--muted)]">
               <FileText size={17} aria-hidden="true" />
               Session Notes
             </div>
@@ -4136,7 +5750,7 @@ function TimerView({
               ].map(([kind, label]) => (
                 <button
                   key={kind}
-                  className="h-8 min-w-8 rounded-md border border-[#e8e8e6] bg-white px-2 text-xs font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+                  className="h-8 min-w-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs font-semibold text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                   type="button"
                   onClick={() =>
                     setSessionNote(
@@ -4153,7 +5767,7 @@ function TimerView({
               <button
                 aria-label={showPreview ? "Hide markdown preview" : "Show markdown preview"}
                 title={showPreview ? "Hide preview" : "Show preview"}
-                className="flex h-8 w-8 items-center justify-center rounded-md border border-[#e8e8e6] bg-white text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+                className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                 type="button"
                 onClick={() => setShowPreview((current) => !current)}
               >
@@ -4170,7 +5784,7 @@ function TimerView({
             <MarkdownPreview note={sessionNote} />
           ) : (
             <textarea
-              className="mt-4 min-h-[400px] flex-1 resize-none rounded-md border border-[#e8e8e6] bg-white p-5 text-[15px] leading-7 text-[#1a1c1b] outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
+              className="mt-4 min-h-[400px] flex-1 resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-5 text-[15px] leading-7 text-[var(--foreground)] outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
               placeholder={"## Session notes\n- What moved forward?\n- What should I keep in mind next?"}
               value={sessionNote}
               onChange={(event) => setSessionNote(event.target.value)}
@@ -4179,12 +5793,12 @@ function TimerView({
         </section>
 
         {settings.showNextUp ? (
-          <section className="rounded-lg border border-[#e8e8e6] bg-[#f9f9f7] p-4">
-            <p className="text-xs font-semibold uppercase text-[#b90042]">Next Up</p>
+          <section className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+            <p className="text-xs font-semibold uppercase text-[var(--danger)]">Next Up</p>
             <h4 className="mt-2 text-lg font-semibold">
               {selectedTask?.title ?? "Pick a task from the board"}
             </h4>
-            <p className="mt-2 text-sm text-[#62605b]">
+            <p className="mt-2 text-sm text-[var(--muted)]">
               {selectedTask
                 ? `${Math.max(0, selectedTask.estimate - selectedTask.spent)} min remaining`
                 : "No active task selected"}
@@ -4192,18 +5806,18 @@ function TimerView({
           </section>
         ) : null}
 
-        <section className="rounded-lg border border-[#e8e8e6] bg-[#f9f9f7] p-4">
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-4">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-[#62605b]">Break</span>
-            <span className="font-semibold text-[#25a565]">
+            <span className="text-[var(--muted)]">Break</span>
+            <span className="font-semibold text-[var(--green)]">
               {settings.breakMinutes} min
             </span>
           </div>
-          <div className="mt-3 h-2 rounded-full bg-white">
-            <div className="h-full w-1/2 rounded-full bg-[#25a565]" />
+          <div className="mt-3 h-2 rounded-full bg-[var(--surface)]">
+            <div className="h-full w-1/2 rounded-full bg-[var(--green)]" />
           </div>
           <div className="mt-4 flex items-center justify-between text-sm">
-            <span className="flex items-center gap-2 text-[#62605b]">
+            <span className="flex items-center gap-2 text-[var(--muted)]">
               {settings.soundEnabled ? (
                 <Volume2 size={16} aria-hidden="true" />
               ) : (
@@ -4211,7 +5825,7 @@ function TimerView({
               )}
               Focus sound
             </span>
-            <span className="font-semibold capitalize text-[#1a1c1b]">
+            <span className="font-semibold capitalize text-[var(--foreground)]">
               {settings.soundEnabled ? focusSoundLabels[settings.focusSound] : "Off"}
             </span>
           </div>
@@ -4225,7 +5839,7 @@ function MarkdownPreview({ note }: { note: string }) {
   const lines = note.trim() ? note.split("\n") : ["Session notes preview"];
 
   return (
-    <div className="mt-4 min-h-[400px] flex-1 rounded-md border border-[#e8e8e6] bg-white p-5 text-[15px] leading-7 text-[#1a1c1b]">
+    <div className="mt-4 min-h-[400px] flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] p-5 text-[15px] leading-7 text-[var(--foreground)]">
       {lines.map((line, index) => {
         if (line.startsWith("## ")) {
           return (
@@ -4238,7 +5852,7 @@ function MarkdownPreview({ note }: { note: string }) {
         if (line.startsWith("- [ ] ")) {
           return (
             <p key={`${line}-${index}`} className="flex gap-2">
-              <span className="mt-1 h-4 w-4 rounded border border-[#d8d7d3]" />
+              <span className="mt-1 h-4 w-4 rounded border border-[var(--border-strong)]" />
               <span>{line.replace(/^- \[ \] /, "")}</span>
             </p>
           );
@@ -4256,7 +5870,7 @@ function MarkdownPreview({ note }: { note: string }) {
           return (
             <blockquote
               key={`${line}-${index}`}
-              className="border-l-2 border-[#ff005e] pl-3 text-[#62605b]"
+              className="border-l-2 border-[var(--accent)] pl-3 text-[var(--muted)]"
             >
               {line.replace(/^> /, "")}
             </blockquote>
@@ -4380,7 +5994,7 @@ function AnalyticsView({
       : undefined;
     const key = category?.id ?? "uncategorised";
     const current = categoryTotals.get(key) ?? {
-      color: category?.color ?? "#8b8984",
+      color: category?.color ?? "var(--subtle)",
       label: category?.name ?? "Uncategorised",
       minutes: 0,
     };
@@ -4446,15 +6060,15 @@ function AnalyticsView({
     <div className="space-y-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase text-[#b90042]">
+          <p className="text-xs font-semibold uppercase text-[var(--danger)]">
             {projectName}
           </p>
           <h2 className="mt-1 text-3xl font-bold">Focus insights</h2>
-          <p className="mt-2 text-sm text-[#62605b]">{rangeLabel}</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">{rangeLabel}</p>
         </div>
         <div
           aria-label="Analytics date range"
-          className="flex w-fit rounded-md border border-[#e8e8e6] bg-white p-1"
+          className="flex w-fit rounded-md border border-[var(--border)] bg-[var(--surface)] p-1"
           role="group"
         >
           {([7, 30, 90] as const).map((days) => (
@@ -4463,8 +6077,8 @@ function AnalyticsView({
               aria-pressed={rangeDays === days}
               className={`h-8 rounded px-3 text-xs font-semibold transition ${
                 rangeDays === days
-                  ? "bg-[#1a1c1b] text-white"
-                  : "text-[#62605b] hover:bg-[#f0f0ee]"
+                  ? "bg-[var(--foreground)] text-[var(--background)]"
+                  : "text-[var(--muted)] hover:bg-[var(--surface-hover)]"
               }`}
               type="button"
               onClick={() => setRangeDays(days)}
@@ -4476,8 +6090,8 @@ function AnalyticsView({
       </header>
 
       {allTags.length ? (
-        <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[#e8e8e6] bg-white p-3">
-          <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[#62605b]">
+        <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+          <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[var(--muted)]">
             <Hash size={16} aria-hidden="true" />
             Analytics filter
           </div>
@@ -4489,8 +6103,8 @@ function AnalyticsView({
                 key={tag}
                 className={`rounded-full border px-3 py-1 text-sm transition ${
                   active
-                    ? "border-[#ff005e] bg-[#fff0f5] text-[#b90042]"
-                    : "border-[#e8e8e6] bg-[#f9f9f7] text-[#62605b] hover:border-[#ff005e]"
+                    ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                    : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
                 }`}
                 type="button"
                 onClick={() => onToggleTag(tag)}
@@ -4530,15 +6144,15 @@ function AnalyticsView({
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.8fr)]">
-        <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase text-[#6a6965]">
+              <p className="text-xs font-semibold uppercase text-[var(--muted)]">
                 Weekly distribution
               </p>
               <h3 className="mt-1 text-xl font-semibold">Focus minutes by day</h3>
             </div>
-            <span className="rounded-md bg-[#fff0f5] px-2 py-1 text-xs font-semibold text-[#b90042]">
+            <span className="rounded-md bg-[var(--accent-soft)] px-2 py-1 text-xs font-semibold text-[var(--danger)]">
               {lastSeven.reduce((total, day) => total + day.minutes, 0)} min
             </span>
           </div>
@@ -4548,7 +6162,7 @@ function AnalyticsView({
               <div key={day.key} className="flex h-full flex-col justify-end gap-2">
                 <div className="flex flex-1 items-end">
                   <div
-                    className="w-full rounded-md bg-[#ff005e]"
+                    className="w-full rounded-md bg-[var(--accent)]"
                     style={{
                       height: `${Math.max(8, (day.minutes / maxDay) * 100)}%`,
                       opacity: day.minutes ? 1 : 0.14,
@@ -4558,25 +6172,25 @@ function AnalyticsView({
                 </div>
                 <div className="text-center">
                   <p className="text-xs font-semibold">{day.minutes || "-"}</p>
-                  <p className="mt-1 text-[11px] text-[#6a6965]">{day.label}</p>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">{day.label}</p>
                 </div>
               </div>
             ))}
           </div>
         </section>
 
-        <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+        <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
           <div className="flex items-center gap-2">
-            <Sparkles className="text-[#2f6fed]" size={19} aria-hidden="true" />
+            <Sparkles className="text-[var(--blue)]" size={19} aria-hidden="true" />
             <h3 className="text-xl font-semibold">Productivity commentary</h3>
           </div>
 
           <div className="mt-5 space-y-4">
-            <div className="border-l-2 border-[#2f6fed] pl-3">
-              <p className="text-xs font-semibold uppercase text-[#2f6fed]">
+            <div className="border-l-2 border-[var(--blue)] pl-3">
+              <p className="text-xs font-semibold uppercase text-[var(--blue)]">
                 Peak rhythm
               </p>
-              <p className="mt-1 text-sm leading-6 text-[#62605b]">
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
                 {peakDay.minutes
                   ? `${peakDay.label} led this week with ${peakDay.minutes} focused minutes${
                       peakHourLabel ? `, with your strongest hour around ${peakHourLabel}` : ""
@@ -4584,11 +6198,11 @@ function AnalyticsView({
                   : "Complete a Pomodoro to establish your weekly focus rhythm."}
               </p>
             </div>
-            <div className="border-l-2 border-[#25a565] pl-3">
-              <p className="text-xs font-semibold uppercase text-[#256b43]">
+            <div className="border-l-2 border-[var(--green)] pl-3">
+              <p className="text-xs font-semibold uppercase text-[var(--green-strong)]">
                 Task momentum
               </p>
-              <p className="mt-1 text-sm leading-6 text-[#62605b]">
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
                 {completionRate}% of visible tasks are complete, with{" "}
                 {rangeSessions.length} committed Pomodoro
                 {rangeSessions.length === 1 ? "" : "s"} in this range.
@@ -4596,8 +6210,8 @@ function AnalyticsView({
             </div>
           </div>
 
-          <div className="mt-6 border-t border-[#e8e8e6] pt-4">
-            <p className="text-xs font-semibold uppercase text-[#6a6965]">
+          <div className="mt-6 border-t border-[var(--border)] pt-4">
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">
               Category breakdown
             </p>
             <div className="mt-3 space-y-3">
@@ -4612,11 +6226,11 @@ function AnalyticsView({
                         <span className="truncate font-semibold">
                           {category.label}
                         </span>
-                        <span className="shrink-0 text-[#62605b]">
+                        <span className="shrink-0 text-[var(--muted)]">
                           {percent}%
                         </span>
                       </div>
-                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[#f0f0ee]">
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--surface-hover)]">
                         <div
                           className="h-full rounded-full"
                           style={{
@@ -4629,7 +6243,7 @@ function AnalyticsView({
                   );
                 })
               ) : (
-                <p className="text-sm text-[#62605b]">
+                <p className="text-sm text-[var(--muted)]">
                   No category focus data in this range.
                 </p>
               )}
@@ -4638,15 +6252,15 @@ function AnalyticsView({
         </section>
       </div>
 
-      <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+      <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase text-[#6a6965]">
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">
               Last 26 weeks
             </p>
             <h3 className="mt-1 text-xl font-semibold">Focus intensity map</h3>
           </div>
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase text-[#6a6965]">
+          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase text-[var(--muted)]">
             <span className="mr-1">Less</span>
             {[0, 0.25, 0.5, 0.75, 1].map((intensity) => (
               <span
@@ -4655,7 +6269,7 @@ function AnalyticsView({
                 style={{
                   backgroundColor:
                     intensity === 0
-                      ? "#ececeb"
+                      ? "var(--heat-empty)"
                       : `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`,
                 }}
               />
@@ -4677,7 +6291,7 @@ function AnalyticsView({
                       ? "transparent"
                       : day.minutes
                         ? `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`
-                        : "#ececeb",
+                        : "var(--heat-empty)",
                   }}
                   title={`${day.date.toLocaleDateString("en", {
                     month: "short",
@@ -4690,17 +6304,17 @@ function AnalyticsView({
         </div>
       </section>
 
-      <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+      <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase text-[#6a6965]">
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">
               Commitment quality
             </p>
             <h3 className="mt-1 text-xl font-semibold">
               Cancellation reason analysis
             </h3>
           </div>
-          <span className="rounded-md bg-[#fff7e8] px-2 py-1 text-xs font-semibold text-[#8a5a00]">
+          <span className="rounded-md bg-[var(--amber-soft)] px-2 py-1 text-xs font-semibold text-[var(--amber-strong)]">
             {cancellationRate}% cancellation rate
           </span>
         </div>
@@ -4713,14 +6327,14 @@ function AnalyticsView({
             return (
               <div
                 key={reason}
-                className="border-l-2 border-[#ff005e] py-1 pl-3"
+                className="border-l-2 border-[var(--accent)] py-1 pl-3"
               >
-                <p className="text-xs font-semibold text-[#62605b]">
+                <p className="text-xs font-semibold text-[var(--muted)]">
                   {cancellationReasonLabels[reason]}
                 </p>
                 <div className="mt-4 flex items-end justify-between gap-3">
                   <span className="text-2xl font-bold">{percent}%</span>
-                  <span className="text-xs text-[#62605b]">
+                  <span className="text-xs text-[var(--muted)]">
                     {count} {count === 1 ? "session" : "sessions"}
                   </span>
                 </div>
@@ -4730,19 +6344,19 @@ function AnalyticsView({
         </div>
       </section>
 
-      <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+      <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-xl font-semibold">Recent Sessions</h3>
-          <Clock3 className="text-[#62605b]" size={20} aria-hidden="true" />
+          <Clock3 className="text-[var(--muted)]" size={20} aria-hidden="true" />
         </div>
-        <div className="divide-y divide-[#e8e8e6]">
+        <div className="divide-y divide-[var(--border)]">
           {rangeSessions.length ? (
             rangeSessions.slice(0, 6).map((session) => (
               <div
                 key={session.id}
                 className="grid gap-2 py-3 text-sm sm:grid-cols-[120px_1fr_90px]"
               >
-                <span className="text-[#6a6965]">
+                <span className="text-[var(--muted)]">
                   {new Date(session.completedAt).toLocaleDateString("en", {
                     month: "short",
                     day: "numeric",
@@ -4753,13 +6367,13 @@ function AnalyticsView({
                     ? taskById.get(session.taskId)?.title ?? session.note
                     : session.note}
                 </span>
-                <span className="font-semibold text-[#ff005e]">
+                <span className="font-semibold text-[var(--accent)]">
                   {session.minutes} min
                 </span>
               </div>
             ))
           ) : (
-            <p className="py-6 text-sm text-[#62605b]">
+            <p className="py-6 text-sm text-[var(--muted)]">
               No completed Pomodoros in this range.
             </p>
           )}
@@ -4822,357 +6436,6 @@ function OnboardingModal({ onChoose }: { onChoose: (choice: "examples" | "blank"
   );
 }
 
-function parseMemberEmails(value: string) {
-  return Array.from(
-    new Set(
-      value
-        .split(/[,\n]/)
-        .map((email) => email.trim().toLowerCase())
-        .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
-    ),
-  );
-}
-
-function CreateProjectModal({
-  kind,
-  onClose,
-  onCreate,
-}: {
-  kind: ProjectKind;
-  onClose: () => void;
-  onCreate: (details: ProjectDetails) => void;
-}) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [color, setColor] = useState(
-    kind === "team" ? "#25a565" : "#ff005e",
-  );
-  const [memberInput, setMemberInput] = useState("");
-  const isTeam = kind === "team";
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#171918]/55 p-4">
-      <section
-        aria-labelledby="create-project-title"
-        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[#dededa] bg-white p-6 shadow-[0_24px_70px_rgba(0,0,0,0.24)]"
-        role="dialog"
-        aria-modal="true"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold uppercase text-[#b90042]">
-              New {isTeam ? "shared" : "personal"} project
-            </p>
-            <h2 id="create-project-title" className="mt-1 text-2xl font-semibold">
-              Set up your project
-            </h2>
-          </div>
-          <button
-            aria-label="Close project setup"
-            className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            type="button"
-            onClick={onClose}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-
-        <form
-          className="mt-6 space-y-5"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const projectName = name.trim();
-
-            if (!projectName) {
-              return;
-            }
-
-            onCreate({
-              name: projectName,
-              description,
-              color,
-              memberEmails: isTeam ? parseMemberEmails(memberInput) : [],
-            });
-          }}
-        >
-          <ProjectFormFields
-            color={color}
-            description={description}
-            isTeam={isTeam}
-            memberInput={memberInput}
-            name={name}
-            onColorChange={setColor}
-            onDescriptionChange={setDescription}
-            onMemberInputChange={setMemberInput}
-            onNameChange={setName}
-          />
-
-          <div className="flex justify-end gap-2 border-t border-[#e8e8e6] pt-5">
-            <button
-              className="h-10 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#1a1c1b] hover:text-[#1a1c1b]"
-              type="button"
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              className="h-10 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054] disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!name.trim()}
-              type="submit"
-            >
-              Create project
-            </button>
-          </div>
-        </form>
-      </section>
-    </div>
-  );
-}
-
-function ProjectFormFields({
-  color,
-  description,
-  isTeam,
-  memberInput,
-  name,
-  onColorChange,
-  onDescriptionChange,
-  onMemberInputChange,
-  onNameChange,
-}: {
-  color: string;
-  description: string;
-  isTeam: boolean;
-  memberInput: string;
-  name: string;
-  onColorChange: (color: string) => void;
-  onDescriptionChange: (description: string) => void;
-  onMemberInputChange: (memberInput: string) => void;
-  onNameChange: (name: string) => void;
-}) {
-  return (
-    <>
-      <div>
-        <label className="block text-sm font-semibold text-[#1a1c1b]" htmlFor="project-name">
-          Project name
-        </label>
-        <input
-          id="project-name"
-          autoFocus
-          className="mt-2 h-11 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition focus:border-[#ff005e]"
-          placeholder="e.g. Home renovation"
-          value={name}
-          onChange={(event) => onNameChange(event.target.value)}
-        />
-      </div>
-
-      <div>
-        <label
-          className="block text-sm font-semibold text-[#1a1c1b]"
-          htmlFor="project-description"
-        >
-          Description
-        </label>
-        <textarea
-          id="project-description"
-          className="mt-2 min-h-24 w-full resize-y rounded-md border border-[#e8e8e6] bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-[#ff005e]"
-          placeholder="What is this project for?"
-          value={description}
-          onChange={(event) => onDescriptionChange(event.target.value)}
-        />
-      </div>
-
-      <fieldset>
-        <legend className="text-sm font-semibold text-[#1a1c1b]">
-          Project color
-        </legend>
-        <div className="mt-2 flex flex-wrap gap-3">
-          {categoryColorOptions.map((option) => (
-            <button
-              key={option}
-              aria-label={`Use project color ${option}`}
-              aria-pressed={color === option}
-              className={`h-9 w-9 rounded-md border-2 transition hover:scale-105 ${
-                color === option
-                  ? "border-[#1a1c1b] shadow-[0_0_0_2px_white_inset]"
-                  : "border-transparent"
-              }`}
-              style={{ backgroundColor: option }}
-              type="button"
-              onClick={() => onColorChange(option)}
-            />
-          ))}
-        </div>
-      </fieldset>
-
-      {isTeam ? (
-        <div>
-          <label
-            className="block text-sm font-semibold text-[#1a1c1b]"
-            htmlFor="project-members"
-          >
-            Team members
-          </label>
-          <textarea
-            id="project-members"
-            className="mt-2 min-h-24 w-full resize-y rounded-md border border-[#e8e8e6] bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-[#ff005e]"
-            placeholder={"alex@example.com\nsam@example.com"}
-            value={memberInput}
-            onChange={(event) => onMemberInputChange(event.target.value)}
-          />
-          <p className="mt-2 text-xs leading-5 text-[#6a6965]">
-            Add one email per line or separate addresses with commas. Invitations
-            are saved locally until project sharing is connected.
-          </p>
-        </div>
-      ) : (
-        <div className="rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-4 py-3 text-sm leading-6 text-[#62605b]">
-          Personal projects are private. You can create one shared project from
-          Settings when you want to invite someone.
-        </div>
-      )}
-    </>
-  );
-}
-
-function ProjectDetailsModal({
-  canDelete,
-  deleteDisabled,
-  onClose,
-  onDelete,
-  onUpdate,
-  project,
-}: {
-  canDelete: boolean;
-  deleteDisabled: boolean;
-  onClose: () => void;
-  onDelete: (projectId: string) => void;
-  onUpdate: (projectId: string, details: ProjectDetails) => void;
-  project?: Project;
-}) {
-  const [name, setName] = useState(project?.name ?? "");
-  const [description, setDescription] = useState(project?.description ?? "");
-  const [color, setColor] = useState(project?.color ?? categoryColorOptions[0]);
-  const [memberInput, setMemberInput] = useState(
-    project?.memberEmails.join("\n") ?? "",
-  );
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  if (!project) {
-    return null;
-  }
-
-  const deleteExplanation = !canDelete
-    ? "Keep at least one project in your workspace."
-    : deleteDisabled
-      ? "Cancel the active Pomodoro before deleting this project."
-      : "This also removes its cards, categories, and focus history from this browser.";
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#171918]/55 p-4">
-      <section
-        aria-labelledby="project-details-title"
-        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[#dededa] bg-white p-6 shadow-[0_24px_70px_rgba(0,0,0,0.24)]"
-        role="dialog"
-        aria-modal="true"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold uppercase text-[#b90042]">Project</p>
-            <h2 id="project-details-title" className="mt-1 text-2xl font-semibold">
-              Project details
-            </h2>
-          </div>
-          <button
-            aria-label="Close project details"
-            className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            type="button"
-            onClick={onClose}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </div>
-
-        <form
-          className="mt-6 space-y-5"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!name.trim()) {
-              return;
-            }
-
-            onUpdate(project.id, {
-              name,
-              description,
-              color,
-              memberEmails:
-                project.kind === "team" ? parseMemberEmails(memberInput) : [],
-            });
-          }}
-        >
-          <ProjectFormFields
-            color={color}
-            description={description}
-            isTeam={project.kind === "team"}
-            memberInput={memberInput}
-            name={name}
-            onColorChange={setColor}
-            onDescriptionChange={setDescription}
-            onMemberInputChange={setMemberInput}
-            onNameChange={setName}
-          />
-          <div className="flex justify-end">
-            <button
-              className="h-10 rounded-md bg-[#1a1c1b] px-4 text-sm font-semibold text-white transition hover:bg-[#343634] disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!name.trim()}
-              type="submit"
-            >
-              Save project
-            </button>
-          </div>
-        </form>
-
-        <div className="mt-8 border-t border-[#e8e8e6] pt-6">
-          <p className="text-sm font-semibold text-[#1a1c1b]">Delete project</p>
-          <p className="mt-1 text-sm leading-6 text-[#62605b]">{deleteExplanation}</p>
-          {confirmDelete ? (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-4">
-              <p className="text-sm font-semibold text-red-700">Delete {project.name} permanently?</p>
-              <div className="mt-3 flex justify-end gap-2">
-                <button
-                  className="h-9 rounded-md border border-red-200 bg-white px-3 text-sm font-semibold text-red-700"
-                  type="button"
-                  onClick={() => setConfirmDelete(false)}
-                >
-                  Keep project
-                </button>
-                <button
-                  className="h-9 rounded-md bg-red-600 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
-                  disabled={!canDelete || deleteDisabled}
-                  type="button"
-                  onClick={() => onDelete(project.id)}
-                >
-                  Delete project
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              className="mt-4 flex h-10 items-center gap-2 rounded-md border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!canDelete || deleteDisabled}
-              type="button"
-              onClick={() => setConfirmDelete(true)}
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              Delete project
-            </button>
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
 function MetricCard({
   icon: Icon,
   label,
@@ -5185,19 +6448,19 @@ function MetricCard({
   value: string;
 }) {
   const tones = {
-    crimson: "bg-[#fff0f5] text-[#ff005e]",
-    green: "bg-[#edf8f1] text-[#25a565]",
-    amber: "bg-[#fff7e8] text-[#b77900]",
-    ink: "bg-[#f0f0ee] text-[#1a1c1b]",
+    crimson: "bg-[var(--accent-soft)] text-[var(--accent)]",
+    green: "bg-[var(--green-soft)] text-[var(--green)]",
+    amber: "bg-[var(--amber-soft)] text-[var(--amber)]",
+    ink: "bg-[var(--surface-hover)] text-[var(--foreground)]",
   };
 
   return (
-    <article className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+    <article className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
       <div className="flex items-center justify-between">
         <div className={`rounded-md p-2 ${tones[tone]}`}>
           <Icon size={20} aria-hidden="true" />
         </div>
-        <p className="text-xs font-semibold uppercase text-[#6a6965]">{label}</p>
+        <p className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</p>
       </div>
       <div className="mt-6 text-3xl font-semibold">{value}</div>
     </article>
@@ -5207,8 +6470,10 @@ function MetricCard({
 function SettingsView({
   activeProject,
   createProject,
+  onEditProject,
   onFocusMinutesChange,
   onPreviewSound,
+  profilePlan,
   settings,
   setSettings,
   teamProjectCount,
@@ -5216,8 +6481,10 @@ function SettingsView({
 }: {
   activeProject?: Project;
   createProject: (kind: ProjectKind) => void;
+  onEditProject: (projectId?: string) => void;
   onFocusMinutesChange: (minutes: number) => void;
   onPreviewSound: (sound: FocusSound) => void;
+  profilePlan: PlanTier;
   settings: UserSettings;
   setSettings: (settings: UserSettings) => void;
   teamProjectCount: number;
@@ -5276,7 +6543,7 @@ function SettingsView({
 
             <div>
               <label
-                className="text-sm font-semibold text-[#62605b]"
+                className="text-sm font-semibold text-[var(--muted)]"
                 htmlFor="focus-sound-select"
               >
                 Working sound
@@ -5284,7 +6551,7 @@ function SettingsView({
               <div className="mt-2 flex gap-2">
                 <select
                   id="focus-sound-select"
-                  className="h-11 min-w-0 flex-1 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm outline-none transition focus:border-[#ff005e]"
+                  className="h-11 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm outline-none transition focus:border-[var(--accent)]"
                   value={settings.focusSound}
                   onChange={(event) =>
                     setSettings({
@@ -5300,7 +6567,7 @@ function SettingsView({
                   ))}
                 </select>
                 <button
-                  className="flex h-11 shrink-0 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#62605b] transition enabled:hover:border-[#ff005e] enabled:hover:text-[#ff005e] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="flex h-11 shrink-0 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--accent)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-45"
                   disabled={timerLocked}
                   type="button"
                   onClick={() => onPreviewSound(settings.focusSound)}
@@ -5325,6 +6592,17 @@ function SettingsView({
           </div>
         </Panel>
 
+        <Panel title="Appearance" icon={Moon}>
+          <ToggleField
+            checked={settings.themeMode === "dark"}
+            description="Use a lower-glare workspace theme."
+            label="Dark mode"
+            onChange={(enabled) =>
+              setSettings({ ...settings, themeMode: enabled ? "dark" : "light" })
+            }
+          />
+        </Panel>
+
         <Panel title="Working Days" icon={CalendarDays}>
           <div className="flex flex-wrap gap-2">
             {weekdays.map((day) => {
@@ -5335,8 +6613,8 @@ function SettingsView({
                   key={day}
                   className={`h-11 w-12 rounded-md border text-sm font-semibold transition ${
                     active
-                      ? "border-[#ff005e] bg-[#ff005e] text-white"
-                      : "border-[#e8e8e6] bg-white text-[#62605b] hover:border-[#ff005e]"
+                      ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                      : "border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--accent)]"
                   }`}
                   type="button"
                   onClick={() => toggleDay(day)}
@@ -5352,16 +6630,18 @@ function SettingsView({
 
       <aside className="space-y-6">
         <Panel title="Plan" icon={Sparkles}>
-          <div className="rounded-lg border border-[#e8e8e6] bg-[#f9f9f7] p-4">
-            <p className="text-sm font-semibold">Free</p>
+          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-4">
+            <p className="text-sm font-semibold">{planLabels[profilePlan]}</p>
             <div className="mt-3 flex items-center justify-between text-sm">
-              <span className="text-[#62605b]">Shared projects</span>
-              <span className="font-semibold">{teamProjectCount}/1</span>
+              <span className="text-[var(--muted)]">Admin shared projects</span>
+              <span className="font-semibold">
+                {profilePlan === "free" ? `${teamProjectCount}/1` : teamProjectCount}
+              </span>
             </div>
             <button
-              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[#e00054] disabled:cursor-not-allowed disabled:opacity-45"
+              className="mt-4 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-45"
               type="button"
-              disabled={teamProjectCount >= 1}
+              disabled={profilePlan === "free" && teamProjectCount >= 1}
               onClick={() => createProject("team")}
             >
               <Users size={17} aria-hidden="true" />
@@ -5373,17 +6653,37 @@ function SettingsView({
         <Panel title="Current Project" icon={FolderKanban}>
           <div className="space-y-3 text-sm">
             <div className="flex items-center justify-between">
-              <span className="text-[#62605b]">Name</span>
+              <span className="text-[var(--muted)]">Name</span>
               <span className="font-semibold">{activeProject?.name}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[#62605b]">Type</span>
+              <span className="text-[var(--muted)]">Type</span>
               <span className="font-semibold capitalize">{activeProject?.kind}</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[#62605b]">Members</span>
-              <span className="font-semibold">{activeProject?.members}</span>
+              <span className="text-[var(--muted)]">Members</span>
+              <span className="font-semibold">
+                {activeProject ? getProjectMemberCount(activeProject) : 0}
+              </span>
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--muted)]">Access</span>
+              <span className="font-semibold">
+                {activeProject?.currentUserRole
+                  ? projectRoleLabels[activeProject.currentUserRole]
+                  : "-"}
+              </span>
+            </div>
+            {activeProject?.currentUserRole === "owner" ? (
+              <button
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--foreground)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                type="button"
+                onClick={() => onEditProject(activeProject.id)}
+              >
+                <Pencil size={16} aria-hidden="true" />
+                Edit project
+              </button>
+            ) : null}
           </div>
         </Panel>
       </aside>
@@ -5401,9 +6701,9 @@ function Panel({
   title: string;
 }) {
   return (
-    <section className="rounded-lg border border-[#e8e8e6] bg-white p-5">
+    <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
       <div className="mb-5 flex items-center gap-2">
-        <Icon className="text-[#62605b]" size={20} aria-hidden="true" />
+        <Icon className="text-[var(--muted)]" size={20} aria-hidden="true" />
         <h3 className="text-lg font-semibold">{title}</h3>
       </div>
       {children}
@@ -5428,9 +6728,9 @@ function NumberField({
 }) {
   return (
     <label className="block">
-      <span className="text-sm font-semibold text-[#62605b]">{label}</span>
+      <span className="text-sm font-semibold text-[var(--muted)]">{label}</span>
       <input
-        className="mt-2 h-11 w-full rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm outline-none transition focus:border-[#ff005e] disabled:cursor-not-allowed disabled:opacity-55"
+        className="mt-2 h-11 w-full rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-55"
         disabled={disabled}
         max={max}
         min={min}
@@ -5457,19 +6757,19 @@ function ToggleField({
     <label className="flex items-center justify-between gap-4">
       <div>
         <span className="font-semibold">{label}</span>
-        <span className="mt-1 block text-sm text-[#62605b]">{description}</span>
+        <span className="mt-1 block text-sm text-[var(--muted)]">{description}</span>
       </div>
       <button
         aria-label={label}
         aria-pressed={checked}
         className={`relative h-7 w-12 shrink-0 rounded-full transition ${
-          checked ? "bg-[#ff005e]" : "bg-[#d8d7d3]"
+          checked ? "bg-[var(--accent)]" : "bg-[var(--border-strong)]"
         }`}
         type="button"
         onClick={() => onChange(!checked)}
       >
         <span
-          className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${
+          className={`absolute top-1 h-5 w-5 rounded-full bg-[var(--surface)] transition ${
             checked ? "left-6" : "left-1"
           }`}
         />
