@@ -26,6 +26,9 @@ export type TockliEventName =
   | "timer_cancelled"
   | "session_completed"
   | "project_created"
+  | "project_updated"
+  | "project_deleted"
+  | "onboarding_completed"
   | "settings_updated";
 
 export type AnalyticsProperties = Record<

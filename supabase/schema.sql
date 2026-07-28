@@ -48,6 +48,7 @@ create table public.projects (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references public.profiles(id) on delete cascade,
   name text not null,
+  description text not null default '',
   kind public.project_kind not null default 'personal',
   color text not null default '#ff005e',
   board_columns jsonb not null default '[
@@ -155,7 +156,7 @@ create table public.user_settings (
   daily_pomodoro_goal integer not null default 6 check (daily_pomodoro_goal between 1 and 16),
   working_days text[] not null default array['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
   strict_mode boolean not null default false,
-  sound_enabled boolean not null default false,
+  sound_enabled boolean not null default true,
   focus_sound public.focus_sound not null default 'brown_noise',
   show_next_up boolean not null default false,
   updated_at timestamptz not null default now()

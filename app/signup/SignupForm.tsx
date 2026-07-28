@@ -35,7 +35,7 @@ function isDuplicateSignup(error: { code?: string; message?: string }) {
 }
 
 function getAuthRedirect() {
-  return `${window.location.origin}/auth/callback?next=/app`;
+  return `${window.location.origin}/auth/callback?next=${encodeURIComponent("/app?onboarding=1")}`;
 }
 
 export default function SignupForm() {
@@ -196,8 +196,8 @@ export default function SignupForm() {
 
       setStatus("success");
       if (data.session) {
-        setMessage("Account created. Opening your workspace...");
-        window.setTimeout(() => window.location.assign("/app"), 600);
+        setMessage("Account created. Let’s set up your workspace...");
+        window.setTimeout(() => window.location.assign("/app?onboarding=1"), 600);
       } else {
         setMessage("Account created. Check your email to confirm, then log in.");
       }

@@ -97,7 +97,7 @@ async function runSmoke() {
 
     const homeHtml = await fetchText(baseUrl, "/");
     assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
-    assert.match(homeHtml, /Launch blog/);
+    assert.match(homeHtml, /About Tockli/);
 
     const loginHtml = await fetchText(baseUrl, "/login?next=/app");
     assert.match(loginHtml, /Log in and pick up your next focus block/);

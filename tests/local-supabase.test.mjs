@@ -163,11 +163,14 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   );
 
   const bootstrappedSettings = await sql`
-    select user_id
+    select user_id, sound_enabled
     from public.user_settings
     where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})
   `;
   assert.equal(bootstrappedSettings.length, 3);
+  assert.ok(
+    bootstrappedSettings.every((settings) => settings.sound_enabled === true),
+  );
 
   const [ownerSettings] = await withAuthenticatedUser(ownerId, async (tx) => {
     return tx`
@@ -204,8 +207,9 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   const [personalProject] = await sql`
     insert into public.projects (owner_id, name, kind)
     values (${ownerId}, 'Personal Focus', 'personal')
-    returning id, board_columns
+    returning id, description, board_columns
   `;
+  assert.equal(personalProject.description, "");
   assert.deepEqual(
     personalProject.board_columns.map((column) => column.title),
     ["To do", "Doing", "Done"],
