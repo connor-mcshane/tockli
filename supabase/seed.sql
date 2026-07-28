@@ -65,12 +65,13 @@ set
   plan = excluded.plan,
   updated_at = now();
 
-insert into public.projects (id, owner_id, name, kind, color)
+insert into public.projects (id, owner_id, name, description, kind, color)
 values
   (
     '10000000-0000-4000-8000-000000000001',
     '00000000-0000-4000-8000-000000000001',
     'Deep Work',
+    'A personal space for focused work.',
     'personal',
     '#ff005e'
   ),
@@ -78,12 +79,14 @@ values
     '10000000-0000-4000-8000-000000000002',
     '00000000-0000-4000-8000-000000000001',
     'Launch Crew',
+    'A shared board for lightweight collaboration.',
     'team',
     '#25a565'
   )
 on conflict (id) do update
 set
   name = excluded.name,
+  description = excluded.description,
   kind = excluded.kind,
   color = excluded.color,
   updated_at = now();
@@ -294,7 +297,7 @@ values
     6,
     array['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
     false,
-    false,
+    true,
     'brown_noise',
     false
   )

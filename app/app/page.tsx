@@ -66,10 +66,19 @@ type CancellationReason =
 type Project = {
   id: string;
   name: string;
+  description: string;
   kind: ProjectKind;
   color: string;
   members: number;
+  memberEmails: string[];
   columns: BoardColumn[];
+};
+
+type ProjectDetails = {
+  name: string;
+  description: string;
+  color: string;
+  memberEmails: string[];
 };
 
 type BoardColumn = {
@@ -157,10 +166,12 @@ type StoredState = {
   activeProjectId: string;
   selectedTaskId: string;
   focusTaskId?: string;
+  onboardingCompleted?: boolean;
 };
 
 const STORAGE_KEY = "tockli.mvp.v1";
 const LEGACY_STORAGE_KEY = "flowtimer.mvp.v1";
+const STORAGE_MIGRATION_KEY = "tockli.mvp.v1.user-scoped";
 const currentUser = {
   id: "current-user",
   name: "Connor McShane",
@@ -175,17 +186,21 @@ const initialProjects: Project[] = [
   {
     id: "project-deep-work",
     name: "Deep Work",
+    description: "A personal space for focused work.",
     kind: "personal",
     color: "#ff005e",
     members: 1,
+    memberEmails: [],
     columns: createDefaultBoardColumns(),
   },
   {
     id: "project-launch",
     name: "Launch Crew",
+    description: "A shared board for lightweight collaboration.",
     kind: "team",
     color: "#25a565",
     members: 2,
+    memberEmails: ["friend@tockli.test"],
     columns: createDefaultBoardColumns(),
   },
 ];
@@ -405,7 +420,7 @@ const initialSettings: UserSettings = {
   dailyPomodoroGoal: 6,
   workingDays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
   strictMode: false,
-  soundEnabled: false,
+  soundEnabled: true,
   focusSound: "brown_noise",
   showNextUp: false,
 };
@@ -413,7 +428,7 @@ const initialSettings: UserSettings = {
 const focusSoundLabels: Record<FocusSound, string> = {
   brown_noise: "Brown noise",
   heavy_rain: "Heavy rain",
-  clock_tick: "Clock ticking",
+  clock_tick: "Old clock",
   ocean_waves: "Beach waves",
   pulse: "Low pulse",
   rain: "Soft rain",
@@ -428,6 +443,15 @@ const focusSoundOptions: FocusSound[] = [
   "thunderstorm",
   "pulse",
 ];
+const focusSoundDescriptions: Record<FocusSound, string> = {
+  brown_noise: "A low, steady blanket of sound for deep work.",
+  clock_tick: "A warm mechanical tick with a quiet wooden body.",
+  heavy_rain: "Dense rain with a soft, shifting room tone.",
+  ocean_waves: "Slow beach swells with a light wash of foam.",
+  pulse: "A restrained low-frequency pulse.",
+  rain: "A gentle, close rain texture.",
+  thunderstorm: "Distant rain and occasional low thunder.",
+};
 
 const cancellationReasonLabels: Record<CancellationReason, string> = {
   interrupted: "I was interrupted",
@@ -579,14 +603,22 @@ function normalizeProjects(projects?: Array<Partial<Project>>): Project[] {
     return initialProjects;
   }
 
-  return projects.map((project) => ({
-    id: project.id ?? createId("project"),
-    name: project.name?.trim() || "New Project",
-    kind: project.kind ?? "personal",
-    color: project.color || "#ff005e",
-    members: project.members ?? 1,
-    columns: normalizeBoardColumns(project.columns),
-  }));
+  return projects.map((project) => {
+    const memberEmails = project.memberEmails?.filter(Boolean) ?? [];
+
+    return {
+      id: project.id ?? createId("project"),
+      name: project.name?.trim() || "New Project",
+      description: project.description?.trim() ?? "",
+      kind: project.kind ?? "personal",
+      color: project.color || "#ff005e",
+      members: project.memberEmails
+        ? 1 + memberEmails.length
+        : project.members ?? 1,
+      memberEmails,
+      columns: normalizeBoardColumns(project.columns),
+    };
+  });
 }
 
 function normalizeBoardColumns(columns?: Array<Partial<BoardColumn>>): BoardColumn[] {
@@ -647,7 +679,7 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
         body: comment.body ?? "",
         createdAt: comment.createdAt ?? new Date().toISOString(),
       })) ?? [],
-    due: task.due ?? "Today",
+    due: task.due ?? "",
   }));
 }
 
@@ -702,6 +734,10 @@ export default function Home() {
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
   const [hydrated, setHydrated] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [projectDialogId, setProjectDialogId] = useState<string | null>(null);
+  const [createProjectKind, setCreateProjectKind] =
+    useState<ProjectKind | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioPreviewTimeoutRef = useRef<number | null>(null);
   const audioNodeRef = useRef<{
@@ -769,16 +805,35 @@ export default function Home() {
     trackEvent("page_view", { surface: "app" });
   }, []);
 
+  const storageKey = authUser ? `${STORAGE_KEY}:${authUser.id}` : STORAGE_KEY;
+
   useEffect(() => {
+    if (!authReady || (isSupabaseConfigured && !authUser)) {
+      return;
+    }
+
     const frame = window.requestAnimationFrame(() => {
-      const stored =
-        window.localStorage.getItem(STORAGE_KEY) ??
-        window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      const onboardingRequested =
+        new URLSearchParams(window.location.search).get("onboarding") === "1";
+
+      if (onboardingRequested) {
+        setOnboardingOpen(true);
+        return;
+      }
+
+      const stored = window.localStorage.getItem(storageKey);
+      const canMigrateLegacyState =
+        Boolean(authUser) &&
+        !window.localStorage.getItem(STORAGE_MIGRATION_KEY);
+      const legacyStored = canMigrateLegacyState
+        ? window.localStorage.getItem(STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_STORAGE_KEY)
+        : null;
       const demoSessions = createDemoSessions();
 
-      if (stored) {
+      if (stored || legacyStored) {
         try {
-          const parsed = JSON.parse(stored) as StoredState;
+          const parsed = JSON.parse(stored ?? legacyStored ?? "{}") as StoredState;
           setProjects(normalizeProjects(parsed.projects));
           setCategories(normalizeCategories(parsed.categories));
           setTasks(normalizeTasks(parsed.tasks));
@@ -794,20 +849,30 @@ export default function Home() {
           setSessionDurationMinutes(
             parsed.settings?.focusMinutes ?? initialSettings.focusMinutes,
           );
+          setOnboardingOpen(false);
+
+          if (legacyStored && authUser) {
+            window.localStorage.setItem(
+              storageKey,
+              JSON.stringify({ ...parsed, onboardingCompleted: true }),
+            );
+            window.localStorage.setItem(STORAGE_MIGRATION_KEY, "true");
+          }
         } catch {
-          window.localStorage.removeItem(STORAGE_KEY);
-          window.localStorage.removeItem(LEGACY_STORAGE_KEY);
-          setSessions(demoSessions);
+          window.localStorage.removeItem(storageKey);
+          setOnboardingOpen(true);
         }
       } else {
-        setSessions(demoSessions);
+        setOnboardingOpen(true);
       }
 
-      setHydrated(true);
+      if (stored || legacyStored) {
+        setHydrated(true);
+      }
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, []);
+  }, [authReady, authUser, storageKey]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -824,9 +889,10 @@ export default function Home() {
       activeProjectId,
       selectedTaskId,
       focusTaskId,
+      onboardingCompleted: true,
     };
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
     window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   }, [
     activeProjectId,
@@ -838,6 +904,7 @@ export default function Home() {
     selectedTaskId,
     sessions,
     settings,
+    storageKey,
     tasks,
   ]);
 
@@ -1073,7 +1140,7 @@ export default function Home() {
       categoryId: activeProjectCategories[0]?.id ?? null,
       subtasks: [],
       comments: [],
-      due: status === activeDoneColumnId ? "Done" : "Today",
+      due: "",
     };
 
     setTasks((current) => [task, ...current]);
@@ -1349,17 +1416,27 @@ export default function Home() {
     return category.id;
   }
 
-  function createProject(kind: ProjectKind) {
+  function openCreateProject(kind: ProjectKind) {
+    if (kind === "team" && teamProjectCount >= 1) {
+      return;
+    }
+
+    setCreateProjectKind(kind);
+  }
+
+  function createProject(kind: ProjectKind, details: ProjectDetails) {
     if (kind === "team" && teamProjectCount >= 1) {
       return;
     }
 
     const project: Project = {
       id: createId("project"),
-      name: kind === "team" ? "Shared Project" : "New Project",
+      name: details.name.trim(),
+      description: details.description.trim(),
       kind,
-      color: kind === "team" ? "#25a565" : "#ff005e",
-      members: kind === "team" ? 2 : 1,
+      color: details.color,
+      members: 1 + details.memberEmails.length,
+      memberEmails: details.memberEmails,
       columns: createDefaultBoardColumns(),
     };
 
@@ -1377,7 +1454,110 @@ export default function Home() {
     setSelectedTags([]);
     setTaskDrawerOpen(false);
     setView("board");
+    setCreateProjectKind(null);
     trackEvent("project_created", { kind });
+  }
+
+  function updateProject(projectId: string, details: ProjectDetails) {
+    const nextName = details.name.trim();
+
+    if (!nextName) {
+      return;
+    }
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId
+          ? {
+              ...project,
+              name: nextName,
+              description: details.description.trim(),
+              color: details.color,
+              memberEmails: details.memberEmails,
+              members: 1 + details.memberEmails.length,
+            }
+          : project,
+      ),
+    );
+    setProjectDialogId(null);
+    trackEvent("project_updated", {
+      field: "name_description_color_members",
+    });
+  }
+
+  function deleteProject(projectId: string) {
+    const project = projects.find((item) => item.id === projectId);
+
+    if (
+      !project ||
+      projects.length <= 1 ||
+      (isRunning && focusTask?.projectId === projectId)
+    ) {
+      return;
+    }
+
+    const nextProject = projects.find((item) => item.id !== projectId);
+    setProjects((current) => current.filter((item) => item.id !== projectId));
+    setCategories((current) =>
+      current.filter((category) => category.projectId !== projectId),
+    );
+    setTasks((current) => current.filter((task) => task.projectId !== projectId));
+    setSessions((current) =>
+      current.filter((session) => session.projectId !== projectId),
+    );
+    setCancellations((current) =>
+      current.filter((cancellation) => cancellation.projectId !== projectId),
+    );
+
+    if (activeProjectId === projectId && nextProject) {
+      setActiveProjectId(nextProject.id);
+      setSelectedTaskId("");
+      setSelectedTags([]);
+      setTaskDrawerOpen(false);
+    }
+
+    setProjectDialogId(null);
+    trackEvent("project_deleted", { kind: project.kind });
+  }
+
+  function finishOnboarding(choice: "examples" | "blank") {
+    if (choice === "examples") {
+      setProjects(initialProjects);
+      setCategories(initialCategories);
+      setTasks(initialTasks);
+      setSessions(createDemoSessions());
+      setCancellations([]);
+      setActiveProjectId(initialProjects[0].id);
+      setSelectedTaskId("task-wireframes");
+    } else {
+      const project: Project = {
+        id: createId("project"),
+        name: "My first board",
+        description: "",
+        kind: "personal",
+        color: "#ff005e",
+        members: 1,
+        memberEmails: [],
+        columns: createDefaultBoardColumns(),
+      };
+
+      setProjects([project]);
+      setCategories([]);
+      setTasks([]);
+      setSessions([]);
+      setCancellations([]);
+      setActiveProjectId(project.id);
+      setSelectedTaskId("");
+    }
+
+    setFocusTaskId("");
+    setSelectedTags([]);
+    setTaskDrawerOpen(false);
+    setView("board");
+    setOnboardingOpen(false);
+    setHydrated(true);
+    window.history.replaceState({}, "", window.location.pathname);
+    trackEvent("onboarding_completed", { board_choice: choice });
   }
 
   function updateFocusMinutes(minutes: number) {
@@ -1550,25 +1730,37 @@ export default function Home() {
               ? 8
               : 2;
     const bufferSize = context.sampleRate * bufferSeconds;
-    const buffer = context.createBuffer(1, bufferSize, context.sampleRate);
+    const buffer = context.createBuffer(2, bufferSize, context.sampleRate);
     const data = buffer.getChannelData(0);
+    const rightData = buffer.getChannelData(1);
     let lastValue = 0;
+    let lastRightValue = 0;
 
     for (let index = 0; index < bufferSize; index += 1) {
       const time = index / context.sampleRate;
+      const white = Math.random() * 2 - 1;
 
       if (sound === "clock_tick") {
-        const clickDuration = Math.floor(context.sampleRate * 0.035);
-        data[index] =
-          index < clickDuration
-            ? Math.sin((index / context.sampleRate) * Math.PI * 2 * 1600) *
-              Math.exp(-index / (context.sampleRate * 0.008))
-            : 0;
+        const tickTime = time % 1;
+        const mechanicalClick =
+          (Math.sin(tickTime * Math.PI * 2 * 1760) * 0.7 +
+            Math.sin(tickTime * Math.PI * 2 * 920) * 0.28) *
+          Math.exp(-tickTime / 0.012);
+        const woodenBody =
+          Math.sin(tickTime * Math.PI * 2 * 174) *
+          Math.exp(-tickTime / 0.075) *
+          0.38;
+        const tickNoise =
+          white * Math.exp(-tickTime / 0.018) * 0.22;
+        data[index] = mechanicalClick + woodenBody + tickNoise;
+        rightData[index] =
+          mechanicalClick * 0.94 + woodenBody * 0.82 + tickNoise * 0.7;
         continue;
       }
 
-      const white = Math.random() * 2 - 1;
       lastValue = (lastValue + 0.02 * white) / 1.02;
+      const rightWhite = Math.random() * 2 - 1;
+      lastRightValue = (lastRightValue + 0.02 * rightWhite) / 1.02;
 
       if (sound === "brown_noise") {
         data[index] = lastValue * 0.8;
@@ -1587,7 +1779,12 @@ export default function Home() {
             2,
           ) *
             0.92;
-        data[index] = (lastValue * 0.72 + white * 0.035) * swell;
+        const foam = Math.max(0, swell - 0.58) * white * 0.15;
+        data[index] = (lastValue * 0.72 + white * 0.035 + foam) * swell;
+        rightData[index] =
+          (lastRightValue * 0.72 + rightWhite * 0.035 + foam * 0.7) *
+          Math.min(1, swell * 0.94 + 0.05);
+        continue;
       } else if (sound === "thunderstorm") {
         let rumble = 0;
 
@@ -1604,12 +1801,20 @@ export default function Home() {
 
         data[index] = white * 0.1 + lastValue * 0.12 + rumble;
       }
+
+      rightData[index] = data[index] * 0.82 + lastRightValue * 0.1 + rightWhite * 0.025;
     }
 
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.loop = true;
-    source.connect(gain);
+    const filter = context.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value =
+      sound === "clock_tick" ? 3600 : sound === "thunderstorm" ? 1500 : 2400;
+    filter.Q.value = sound === "clock_tick" ? 0.45 : 0.2;
+    source.connect(filter);
+    filter.connect(gain);
     source.start();
     audioNodeRef.current = { gain, source };
   }
@@ -1727,7 +1932,7 @@ export default function Home() {
                   title="Create personal project"
                   className="rounded p-1 text-[#6a6965] transition hover:bg-[#f0f0ee] hover:text-[#ff005e]"
                   type="button"
-                  onClick={() => createProject("personal")}
+                  onClick={() => openCreateProject("personal")}
                 >
                   <Plus size={16} aria-hidden="true" />
                 </button>
@@ -1735,29 +1940,42 @@ export default function Home() {
 
               <div className="space-y-1">
                 {projects.map((project) => (
-                  <button
+                  <div
                     key={project.id}
-                    className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition ${
+                    className={`group flex w-full items-center gap-1 rounded-md text-sm transition ${
                       activeProjectId === project.id
                         ? "bg-[#f0f0ee] text-[#1a1c1b]"
                         : "text-[#62605b] hover:bg-[#f4f4f2]"
                     }`}
-                    type="button"
-                    onClick={() => {
-                      setActiveProjectId(project.id);
-                      setSelectedTags([]);
-                      setTaskDrawerOpen(false);
-                    }}
                   >
-                    <span
-                      className="h-2.5 w-2.5 rounded-full"
-                      style={{ background: project.color }}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                    {project.kind === "team" ? (
-                      <Users size={15} aria-hidden="true" />
-                    ) : null}
-                  </button>
+                    <button
+                      className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left"
+                      type="button"
+                      onClick={() => {
+                        setActiveProjectId(project.id);
+                        setSelectedTags([]);
+                        setTaskDrawerOpen(false);
+                      }}
+                    >
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ background: project.color }}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      {project.kind === "team" ? (
+                        <Users className="shrink-0" size={15} aria-hidden="true" />
+                      ) : null}
+                    </button>
+                    <button
+                      aria-label={`Manage ${project.name}`}
+                      title={`Manage ${project.name}`}
+                      className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded text-[#62605b] opacity-0 transition hover:bg-white hover:text-[#ff005e] group-hover:opacity-100 focus:opacity-100"
+                      type="button"
+                      onClick={() => setProjectDialogId(project.id)}
+                    >
+                      <MoreHorizontal size={16} aria-hidden="true" />
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -1886,12 +2104,14 @@ export default function Home() {
                 >
                   <LogOut size={16} aria-hidden="true" />
                 </button>
-                <div
-                  className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-sm font-semibold text-white"
+                <Link
+                  aria-label="Manage account"
+                  className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-sm font-semibold text-white transition hover:bg-[#e00054] focus:outline-none focus:ring-2 focus:ring-[#ff005e] focus:ring-offset-2"
+                  href="/account"
                   title={authEmail}
                 >
                   {authInitial}
-                </div>
+                </Link>
               </div>
             </div>
 
@@ -2002,7 +2222,7 @@ export default function Home() {
                 activeProject={activeProject}
                 authDisplayName={authDisplayName}
                 authEmail={authEmail}
-                createProject={createProject}
+                createProject={openCreateProject}
                 onFocusMinutesChange={updateFocusMinutes}
                 onPreviewSound={previewFocusSound}
                 onSignOut={signOut}
@@ -2039,6 +2259,27 @@ export default function Home() {
           onStepChange={setCancelStep}
         />
       ) : null}
+
+      {projectDialogId ? (
+        <ProjectDetailsModal
+          canDelete={projects.length > 1}
+          deleteDisabled={isRunning && focusTask?.projectId === projectDialogId}
+          project={projects.find((project) => project.id === projectDialogId)}
+          onClose={() => setProjectDialogId(null)}
+          onDelete={deleteProject}
+          onUpdate={updateProject}
+        />
+      ) : null}
+
+      {createProjectKind ? (
+        <CreateProjectModal
+          kind={createProjectKind}
+          onClose={() => setCreateProjectKind(null)}
+          onCreate={(details) => createProject(createProjectKind, details)}
+        />
+      ) : null}
+
+      {onboardingOpen ? <OnboardingModal onChoose={finishOnboarding} /> : null}
     </main>
   );
 }
@@ -2971,10 +3212,12 @@ function TaskCard({
                 {task.comments.length}
               </span>
             ) : null}
-            <span className="flex items-center gap-1">
-              <CalendarDays size={13} aria-hidden="true" />
-              {formatDueDate(task.due)}
-            </span>
+            {task.due ? (
+              <span className="flex items-center gap-1">
+                <CalendarDays size={13} aria-hidden="true" />
+                {formatDueDate(task.due)}
+              </span>
+            ) : null}
           </div>
           <button
             aria-label={
@@ -3128,6 +3371,7 @@ function TaskDetailModal({
   const [newCategoryColor, setNewCategoryColor] = useState(categoryColorOptions[0]);
   const [newComment, setNewComment] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState(task.description);
   const [activeMetaEditor, setActiveMetaEditor] = useState<
     "category" | "date" | "tags" | null
   >(null);
@@ -3135,6 +3379,7 @@ function TaskDetailModal({
     (category) => category.id === task.categoryId,
   );
   const completedSubtasks = task.subtasks.filter((subtask) => subtask.done).length;
+  const hasUnsavedDescription = descriptionDraft !== task.description;
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -3491,19 +3736,39 @@ function TaskDetailModal({
         </div>
 
         <div className="mt-5 space-y-5">
-        <label className="block">
-          <span className="text-sm font-semibold text-[#62605b]">
-            Description
-          </span>
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <label
+              className="text-sm font-semibold text-[#62605b]"
+              htmlFor="card-description"
+            >
+              Description
+            </label>
+            <button
+              className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition enabled:hover:bg-[#e00054] disabled:bg-[#25a565]"
+              disabled={!hasUnsavedDescription}
+              type="button"
+              onClick={() =>
+                onUpdateTask(task.id, { description: descriptionDraft })
+              }
+            >
+              <Check size={15} aria-hidden="true" />
+              {hasUnsavedDescription ? "Save description" : "Saved"}
+            </button>
+          </div>
           <textarea
+            id="card-description"
             className="mt-2 min-h-28 w-full resize-none rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3 text-sm leading-6 outline-none transition placeholder:text-[#8b8984] focus:border-[#ff005e]"
             placeholder="Add context, links, or notes for this task."
-            value={task.description}
-            onChange={(event) =>
-              onUpdateTask(task.id, { description: event.target.value })
-            }
+            value={descriptionDraft}
+            onChange={(event) => setDescriptionDraft(event.target.value)}
           />
-        </label>
+          {hasUnsavedDescription ? (
+            <p className="mt-1 text-xs text-[#b77900]">
+              Save the description before closing the card.
+            </p>
+          ) : null}
+        </div>
 
         <details className="group rounded-lg border border-[#e8e8e6] bg-[#fdfdfb]">
           <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold text-[#62605b] [&::-webkit-details-marker]:hidden">
@@ -4508,6 +4773,410 @@ function AnalyticsView({
   );
 }
 
+function OnboardingModal({ onChoose }: { onChoose: (choice: "examples" | "blank") => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#171918]/55 p-4">
+      <section
+        aria-labelledby="onboarding-title"
+        className="w-full max-w-2xl rounded-lg border border-[#dededa] bg-white p-6 shadow-[0_24px_70px_rgba(0,0,0,0.24)] sm:p-8"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex h-11 w-11 items-center justify-center rounded-md bg-[#fff0f5] text-[#ff005e]">
+          <FolderKanban size={22} aria-hidden="true" />
+        </div>
+        <p className="mt-5 text-sm font-semibold uppercase text-[#b90042]">Set up your board</p>
+        <h1 id="onboarding-title" className="mt-2 text-3xl font-semibold">
+          How would you like to begin?
+        </h1>
+        <p className="mt-3 max-w-xl text-base leading-7 text-[#62605b]">
+          Start with a few realistic cards to see how Tockli works, or begin with a clean board.
+        </p>
+
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          <button
+            className="group rounded-lg border border-[#e8e8e6] bg-[#f9f9f7] p-5 text-left transition hover:border-[#ff005e] hover:bg-[#fff7fa] focus:outline-none focus:ring-2 focus:ring-[#ff005e]"
+            type="button"
+            onClick={() => onChoose("examples")}
+          >
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#fff0f5] text-[#ff005e]">
+              <Sparkles size={19} aria-hidden="true" />
+            </div>
+            <h2 className="mt-5 text-lg font-semibold">Show me an example</h2>
+            <p className="mt-2 text-sm leading-6 text-[#62605b]">
+              A personal board, a shared-project example, and cards ready to explore.
+            </p>
+          </button>
+          <button
+            className="group rounded-lg border border-[#e8e8e6] bg-white p-5 text-left transition hover:border-[#ff005e] hover:bg-[#fff7fa] focus:outline-none focus:ring-2 focus:ring-[#ff005e]"
+            type="button"
+            onClick={() => onChoose("blank")}
+          >
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#edf8f1] text-[#25a565]">
+              <Plus size={20} aria-hidden="true" />
+            </div>
+            <h2 className="mt-5 text-lg font-semibold">Start with a blank board</h2>
+            <p className="mt-2 text-sm leading-6 text-[#62605b]">
+              One clean personal board with your own columns and first card.
+            </p>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function parseMemberEmails(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[,\n]/)
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)),
+    ),
+  );
+}
+
+function CreateProjectModal({
+  kind,
+  onClose,
+  onCreate,
+}: {
+  kind: ProjectKind;
+  onClose: () => void;
+  onCreate: (details: ProjectDetails) => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState(
+    kind === "team" ? "#25a565" : "#ff005e",
+  );
+  const [memberInput, setMemberInput] = useState("");
+  const isTeam = kind === "team";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#171918]/55 p-4">
+      <section
+        aria-labelledby="create-project-title"
+        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[#dededa] bg-white p-6 shadow-[0_24px_70px_rgba(0,0,0,0.24)]"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase text-[#b90042]">
+              New {isTeam ? "shared" : "personal"} project
+            </p>
+            <h2 id="create-project-title" className="mt-1 text-2xl font-semibold">
+              Set up your project
+            </h2>
+          </div>
+          <button
+            aria-label="Close project setup"
+            className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+
+        <form
+          className="mt-6 space-y-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const projectName = name.trim();
+
+            if (!projectName) {
+              return;
+            }
+
+            onCreate({
+              name: projectName,
+              description,
+              color,
+              memberEmails: isTeam ? parseMemberEmails(memberInput) : [],
+            });
+          }}
+        >
+          <ProjectFormFields
+            color={color}
+            description={description}
+            isTeam={isTeam}
+            memberInput={memberInput}
+            name={name}
+            onColorChange={setColor}
+            onDescriptionChange={setDescription}
+            onMemberInputChange={setMemberInput}
+            onNameChange={setName}
+          />
+
+          <div className="flex justify-end gap-2 border-t border-[#e8e8e6] pt-5">
+            <button
+              className="h-10 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#1a1c1b] hover:text-[#1a1c1b]"
+              type="button"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              className="h-10 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054] disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={!name.trim()}
+              type="submit"
+            >
+              Create project
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ProjectFormFields({
+  color,
+  description,
+  isTeam,
+  memberInput,
+  name,
+  onColorChange,
+  onDescriptionChange,
+  onMemberInputChange,
+  onNameChange,
+}: {
+  color: string;
+  description: string;
+  isTeam: boolean;
+  memberInput: string;
+  name: string;
+  onColorChange: (color: string) => void;
+  onDescriptionChange: (description: string) => void;
+  onMemberInputChange: (memberInput: string) => void;
+  onNameChange: (name: string) => void;
+}) {
+  return (
+    <>
+      <div>
+        <label className="block text-sm font-semibold text-[#1a1c1b]" htmlFor="project-name">
+          Project name
+        </label>
+        <input
+          id="project-name"
+          autoFocus
+          className="mt-2 h-11 w-full rounded-md border border-[#e8e8e6] bg-white px-3 text-sm outline-none transition focus:border-[#ff005e]"
+          placeholder="e.g. Home renovation"
+          value={name}
+          onChange={(event) => onNameChange(event.target.value)}
+        />
+      </div>
+
+      <div>
+        <label
+          className="block text-sm font-semibold text-[#1a1c1b]"
+          htmlFor="project-description"
+        >
+          Description
+        </label>
+        <textarea
+          id="project-description"
+          className="mt-2 min-h-24 w-full resize-y rounded-md border border-[#e8e8e6] bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-[#ff005e]"
+          placeholder="What is this project for?"
+          value={description}
+          onChange={(event) => onDescriptionChange(event.target.value)}
+        />
+      </div>
+
+      <fieldset>
+        <legend className="text-sm font-semibold text-[#1a1c1b]">
+          Project color
+        </legend>
+        <div className="mt-2 flex flex-wrap gap-3">
+          {categoryColorOptions.map((option) => (
+            <button
+              key={option}
+              aria-label={`Use project color ${option}`}
+              aria-pressed={color === option}
+              className={`h-9 w-9 rounded-md border-2 transition hover:scale-105 ${
+                color === option
+                  ? "border-[#1a1c1b] shadow-[0_0_0_2px_white_inset]"
+                  : "border-transparent"
+              }`}
+              style={{ backgroundColor: option }}
+              type="button"
+              onClick={() => onColorChange(option)}
+            />
+          ))}
+        </div>
+      </fieldset>
+
+      {isTeam ? (
+        <div>
+          <label
+            className="block text-sm font-semibold text-[#1a1c1b]"
+            htmlFor="project-members"
+          >
+            Team members
+          </label>
+          <textarea
+            id="project-members"
+            className="mt-2 min-h-24 w-full resize-y rounded-md border border-[#e8e8e6] bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-[#ff005e]"
+            placeholder={"alex@example.com\nsam@example.com"}
+            value={memberInput}
+            onChange={(event) => onMemberInputChange(event.target.value)}
+          />
+          <p className="mt-2 text-xs leading-5 text-[#6a6965]">
+            Add one email per line or separate addresses with commas. Invitations
+            are saved locally until project sharing is connected.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-4 py-3 text-sm leading-6 text-[#62605b]">
+          Personal projects are private. You can create one shared project from
+          Settings when you want to invite someone.
+        </div>
+      )}
+    </>
+  );
+}
+
+function ProjectDetailsModal({
+  canDelete,
+  deleteDisabled,
+  onClose,
+  onDelete,
+  onUpdate,
+  project,
+}: {
+  canDelete: boolean;
+  deleteDisabled: boolean;
+  onClose: () => void;
+  onDelete: (projectId: string) => void;
+  onUpdate: (projectId: string, details: ProjectDetails) => void;
+  project?: Project;
+}) {
+  const [name, setName] = useState(project?.name ?? "");
+  const [description, setDescription] = useState(project?.description ?? "");
+  const [color, setColor] = useState(project?.color ?? categoryColorOptions[0]);
+  const [memberInput, setMemberInput] = useState(
+    project?.memberEmails.join("\n") ?? "",
+  );
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  if (!project) {
+    return null;
+  }
+
+  const deleteExplanation = !canDelete
+    ? "Keep at least one project in your workspace."
+    : deleteDisabled
+      ? "Cancel the active Pomodoro before deleting this project."
+      : "This also removes its cards, categories, and focus history from this browser.";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#171918]/55 p-4">
+      <section
+        aria-labelledby="project-details-title"
+        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-lg border border-[#dededa] bg-white p-6 shadow-[0_24px_70px_rgba(0,0,0,0.24)]"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase text-[#b90042]">Project</p>
+            <h2 id="project-details-title" className="mt-1 text-2xl font-semibold">
+              Project details
+            </h2>
+          </div>
+          <button
+            aria-label="Close project details"
+            className="flex h-9 w-9 items-center justify-center rounded-md border border-[#e8e8e6] text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+            type="button"
+            onClick={onClose}
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+
+        <form
+          className="mt-6 space-y-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!name.trim()) {
+              return;
+            }
+
+            onUpdate(project.id, {
+              name,
+              description,
+              color,
+              memberEmails:
+                project.kind === "team" ? parseMemberEmails(memberInput) : [],
+            });
+          }}
+        >
+          <ProjectFormFields
+            color={color}
+            description={description}
+            isTeam={project.kind === "team"}
+            memberInput={memberInput}
+            name={name}
+            onColorChange={setColor}
+            onDescriptionChange={setDescription}
+            onMemberInputChange={setMemberInput}
+            onNameChange={setName}
+          />
+          <div className="flex justify-end">
+            <button
+              className="h-10 rounded-md bg-[#1a1c1b] px-4 text-sm font-semibold text-white transition hover:bg-[#343634] disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={!name.trim()}
+              type="submit"
+            >
+              Save project
+            </button>
+          </div>
+        </form>
+
+        <div className="mt-8 border-t border-[#e8e8e6] pt-6">
+          <p className="text-sm font-semibold text-[#1a1c1b]">Delete project</p>
+          <p className="mt-1 text-sm leading-6 text-[#62605b]">{deleteExplanation}</p>
+          {confirmDelete ? (
+            <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-4">
+              <p className="text-sm font-semibold text-red-700">Delete {project.name} permanently?</p>
+              <div className="mt-3 flex justify-end gap-2">
+                <button
+                  className="h-9 rounded-md border border-red-200 bg-white px-3 text-sm font-semibold text-red-700"
+                  type="button"
+                  onClick={() => setConfirmDelete(false)}
+                >
+                  Keep project
+                </button>
+                <button
+                  className="h-9 rounded-md bg-red-600 px-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!canDelete || deleteDisabled}
+                  type="button"
+                  onClick={() => onDelete(project.id)}
+                >
+                  Delete project
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="mt-4 flex h-10 items-center gap-2 rounded-md border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={!canDelete || deleteDisabled}
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 size={16} aria-hidden="true" />
+              Delete project
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function MetricCard({
   icon: Icon,
   label,
@@ -4650,6 +5319,9 @@ function SettingsView({
                   Preview
                 </button>
               </div>
+              <p className="mt-2 text-xs leading-5 text-[#62605b]">
+                {focusSoundDescriptions[settings.focusSound]} Sound stays in your browser and only plays while a Pomodoro is running.
+              </p>
             </div>
 
             <ToggleField
