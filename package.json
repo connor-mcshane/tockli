@@ -19,7 +19,9 @@
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
-    "db:status": "supabase status -o env"
+    "db:status": "supabase status -o env",
+    "env:local": "node scripts/switch-env.mjs local",
+    "env:hosted": "node scripts/switch-env.mjs hosted"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",

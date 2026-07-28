@@ -44,14 +44,20 @@ test("server-renders launch marketing routes", async () => {
   assert.equal(home.status, 200);
   const homeHtml = await home.text();
   assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
-  assert.match(homeHtml, /Launch blog/);
-  assert.match(homeHtml, /href="\/app"/);
+  assert.match(homeHtml, /Choose/);
+  assert.match(homeHtml, /Focus/);
+  assert.match(homeHtml, /Review/);
+  assert.match(homeHtml, /About/);
+  assert.match(homeHtml, /Get started for free/);
+  assert.match(homeHtml, /Personal task boards/);
+  assert.match(homeHtml, /About Tockli/);
+  assert.match(homeHtml, /Personal productivity, without the admin/);
 
   const landing = await render("/landing");
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
   assert.match(landingHtml, /Turn a messy task list into one protected focus block/);
-  assert.match(landingHtml, /Launch blog/);
+  assert.doesNotMatch(landingHtml, /Open the workspace/);
 
   const signup = await render("/signup");
   assert.equal(signup.status, 200);
@@ -76,6 +82,8 @@ test("server-renders launch marketing routes", async () => {
   const blogHtml = await blog.text();
   assert.match(blogHtml, /Practical notes for calmer focus work/);
   assert.match(blogHtml, /Why a focus timer works better/);
+  assert.match(blogHtml, /Get started for free/);
+  assert.doesNotMatch(blogHtml, /Workspace/);
 
   const article = await render("/blog/focus-timer-with-a-task-board");
   assert.equal(article.status, 200);

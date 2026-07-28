@@ -1,16 +1,15 @@
 "use client";
 
 import {
-  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   LockKeyhole,
   LogIn,
   Mail,
-  TimerReset,
 } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
+import MarketingHeader from "@/app/MarketingHeader";
 import { trackEvent } from "@/lib/analytics";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -149,31 +148,7 @@ export default function LoginForm() {
 
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
-      <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
-          <Link className="flex items-center gap-3" href="/">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
-              <TimerReset size={20} aria-hidden="true" />
-            </span>
-            <span className="text-lg font-semibold">Tockli</span>
-          </Link>
-          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
-            <Link className="transition hover:text-[#ff005e]" href="/blog">
-              Blog
-            </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/app">
-              Workspace
-            </Link>
-          </nav>
-          <Link
-            className="flex h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-            href="/"
-          >
-            <ArrowLeft size={16} aria-hidden="true" />
-            Landing
-          </Link>
-        </div>
-      </header>
+      <MarketingHeader />
 
       <section className="mx-auto grid min-h-[calc(100svh-4rem)] max-w-7xl items-center gap-10 px-4 py-10 md:px-8 lg:grid-cols-[minmax(0,0.95fr)_minmax(400px,460px)]">
         <div>

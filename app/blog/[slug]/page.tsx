@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowRight, Clock3, TimerReset } from "lucide-react";
-import Link from "next/link";
+import { Clock3 } from "lucide-react";
+import MarketingHeader from "@/app/MarketingHeader";
 import { getBlogArticle, blogArticles } from "@/lib/marketing";
 
 type BlogArticlePageProps = {
@@ -69,43 +69,7 @@ export default async function BlogArticlePage({ params }: BlogArticlePageProps) 
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         type="application/ld+json"
       />
-      <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
-          <Link className="flex items-center gap-3" href="/">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
-              <TimerReset size={20} aria-hidden="true" />
-            </span>
-            <span className="text-lg font-semibold">Tockli</span>
-          </Link>
-          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
-            <Link className="transition hover:text-[#ff005e]" href="/">
-              Home
-            </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/blog">
-              Blog
-            </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/app">
-              Workspace
-            </Link>
-          </nav>
-          <div className="flex items-center gap-2">
-            <Link
-              className="hidden h-10 items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-4 text-sm font-semibold text-[#62605b] transition hover:border-[#ff005e] hover:text-[#ff005e] sm:flex"
-              href="/blog"
-            >
-              <ArrowLeft size={16} aria-hidden="true" />
-              Blog
-            </Link>
-            <Link
-              className="flex h-10 items-center gap-2 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
-              href="/signup"
-            >
-              Get started
-              <ArrowRight size={16} aria-hidden="true" />
-            </Link>
-          </div>
-        </div>
-      </header>
+      <MarketingHeader />
 
       <article>
         <section className="border-b border-[#e8e8e6] bg-white px-4 py-14 md:px-8">
