@@ -4042,7 +4042,9 @@ function AnalyticsView({
 
   const lastSeven = Array.from({ length: 7 }, (_, index) => {
     const day = new Date(today);
-    day.setDate(day.getDate() - (6 - index));
+    const dayOfWeek = day.getDay();
+    const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    day.setDate(day.getDate() - daysToMonday + index);
     return {
       key: dateKey(day),
       label: day.toLocaleDateString("en", { weekday: "short" }),
