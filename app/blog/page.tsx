@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
-import { ArrowRight, Clock3, TimerReset } from "lucide-react";
+import { ArrowRight, Clock3 } from "lucide-react";
 import Link from "next/link";
+import MarketingHeader from "@/app/MarketingHeader";
 import { blogArticles } from "@/lib/marketing";
 
 export const metadata: Metadata = {
@@ -22,34 +23,7 @@ export const metadata: Metadata = {
 export default function BlogIndexPage() {
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#1a1c1b]">
-      <header className="border-b border-[#e8e8e6] bg-white px-4 md:px-8">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4">
-          <Link className="flex items-center gap-3" href="/">
-            <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
-              <TimerReset size={20} aria-hidden="true" />
-            </span>
-            <span className="text-lg font-semibold">Tockli</span>
-          </Link>
-          <nav className="hidden items-center gap-6 text-sm font-semibold text-[#62605b] md:flex">
-            <Link className="transition hover:text-[#ff005e]" href="/">
-              Home
-            </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/app">
-              Workspace
-            </Link>
-            <Link className="transition hover:text-[#ff005e]" href="/login">
-              Log in
-            </Link>
-          </nav>
-          <Link
-            className="flex h-10 items-center gap-2 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
-            href="/signup"
-          >
-            Get started
-            <ArrowRight size={16} aria-hidden="true" />
-          </Link>
-        </div>
-      </header>
+      <MarketingHeader />
 
       <section className="border-b border-[#e8e8e6] bg-white px-4 py-14 md:px-8">
         <div className="mx-auto max-w-7xl">

@@ -23,6 +23,25 @@ pnpm run dev
 
 The local site runs at `http://localhost:3000/`.
 
+### Choose a Supabase environment
+
+The app reads only `.env.local`. Two ignored configuration files make the
+intended target explicit:
+
+- `.env.localdb` - local Supabase stack, including the seeded demo accounts
+- `.env.localsupabase` - hosted Supabase project
+
+Switch the active configuration, then restart `pnpm run dev`:
+
+```bash
+pnpm run env:local
+pnpm run env:hosted
+```
+
+The first command is the right choice for local product testing. After
+`pnpm run db:start` and `pnpm run db:reset`, sign in with
+`demo@tockli.test` and password `tockli-demo`.
+
 ## Launch Routes
 
 - `/` - acquisition landing page
@@ -66,7 +85,7 @@ NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
 
-For local development, install/start Docker Desktop first, then run:
+For local database development, install/start Docker Desktop first, then run:
 
 ```bash
 pnpm run db:start
@@ -75,8 +94,9 @@ pnpm run db:status
 pnpm run test:db
 ```
 
-`pnpm run db:status` prints the local Supabase URL and anon key to copy into
-`.env.local`. The local database uses `supabase/config.toml`, applies
+`pnpm run db:status` prints the local Supabase URL and anon key for
+`.env.localdb`. Run `pnpm run env:local` afterwards to make it active. The
+local database uses `supabase/config.toml`, applies
 `supabase/migrations/20260722210000_initial_schema.sql`, and loads
 `supabase/seed.sql` on reset.
 
