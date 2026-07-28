@@ -110,59 +110,65 @@ export default function LandingPageClient() {
         </div>
       </header>
 
-      <section className="relative min-h-[82svh] overflow-hidden border-b border-[#e8e8e6]">
-        <Image
-          alt="Tockli task board with focus cards, project navigation, and daily focus progress."
-          className="absolute inset-0 h-full w-full object-cover object-center"
-          fill
-          priority
-          sizes="100vw"
-          src="/tockli-preview.png"
-        />
-        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(247,247,245,0.96)_0%,rgba(247,247,245,0.9)_42%,rgba(247,247,245,0.48)_100%)]" />
-        <div className="relative mx-auto flex min-h-[82svh] max-w-7xl items-center px-4 py-16 md:px-8">
-          <div className="max-w-3xl">
-            <p className="text-sm font-semibold uppercase text-[#b90042]">
-              {variant.eyebrow}
-            </p>
-            <h1 className="mt-3 text-5xl font-semibold leading-[1.02] text-[#111312] sm:text-6xl lg:text-7xl">
-              Tockli
-            </h1>
-            <p className="mt-5 max-w-2xl text-3xl font-semibold leading-tight text-[#1a1c1b] sm:text-4xl">
-              {variant.headline}
-            </p>
-            <p className="mt-5 max-w-xl text-lg leading-8 text-[#4f4d49] sm:text-xl">
-              Tockli brings your task board, focus timer, notes, and daily
-              rhythm into one calm app for getting things done.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link
-                className="flex h-12 items-center gap-2 rounded-md bg-[#ff005e] px-5 text-sm font-semibold text-white transition hover:bg-[#e00054]"
-                href="/signup"
-                onClick={() => trackCta("hero_signup", "/signup")}
-              >
-                {variant.cta}
-                <ArrowRight size={17} aria-hidden="true" />
-              </Link>
-              <Link
-                className="flex h-12 items-center gap-2 rounded-md border border-[#d8d7d3] bg-white px-5 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-                href="/app"
-                onClick={() => trackCta("hero_open_app", "/app")}
-              >
-                Open the app
-              </Link>
+      <section className="relative overflow-hidden border-b border-[#e8e8e6] bg-[#f7f7f5]">
+        <div className="mx-auto max-w-7xl px-4 py-16 sm:py-24 md:px-8">
+          <div className="grid items-center gap-12 lg:grid-cols-2">
+            <div className="max-w-2xl">
+              <p className="text-sm font-semibold uppercase text-[#b90042]">
+                {variant.eyebrow}
+              </p>
+              <h1 className="mt-3 text-5xl font-semibold leading-[1.02] text-[#111312] sm:text-6xl lg:text-7xl">
+                Tockli
+              </h1>
+              <p className="mt-5 text-3xl font-semibold leading-tight text-[#1a1c1b] sm:text-4xl">
+                {variant.headline}
+              </p>
+              <p className="mt-5 text-lg leading-8 text-[#4f4d49] sm:text-xl">
+                Tockli brings your task board, focus timer, notes, and daily
+                rhythm into one calm app for getting things done.
+              </p>
+              <div className="mt-8 flex flex-wrap gap-3">
+                <Link
+                  className="flex h-12 items-center gap-2 rounded-md bg-[#ff005e] px-5 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+                  href="/signup"
+                  onClick={() => trackCta("hero_signup", "/signup")}
+                >
+                  {variant.cta}
+                  <ArrowRight size={17} aria-hidden="true" />
+                </Link>
+                <Link
+                  className="flex h-12 items-center gap-2 rounded-md border border-[#d8d7d3] bg-white px-5 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+                  href="/app"
+                  onClick={() => trackCta("hero_open_app", "/app")}
+                >
+                  Open the app
+                </Link>
+              </div>
+              <div className="mt-8 flex flex-wrap gap-2 text-sm font-semibold text-[#4f4d49]">
+                {["A clean, peaceful interface", "Save your thoughts", "Built for your personal workflow"].map(
+                  (item) => (
+                    <span
+                      key={item}
+                      className="rounded-md border border-[#e1e0dc] bg-white/80 px-3 py-2"
+                    >
+                      {item}
+                    </span>
+                  ),
+                )}
+              </div>
             </div>
-            <div className="mt-8 flex flex-wrap gap-2 text-sm font-semibold text-[#4f4d49]">
-              {["A clean, peaceful interface", "Save your thoughts", "Built for your personal workflow"].map(
-                (item) => (
-                  <span
-                    key={item}
-                    className="rounded-md border border-[#e1e0dc] bg-white/80 px-3 py-2"
-                  >
-                    {item}
-                  </span>
-                ),
-              )}
+            
+            <div className="relative mx-auto w-full max-w-lg lg:max-w-none">
+              <div className="relative w-full rounded-2xl border border-[#d8d7d3] bg-white shadow-xl overflow-hidden aspect-[4/3] lg:aspect-[4/3]">
+                <Image
+                  alt="Tockli task board with focus cards, project navigation, and daily focus progress."
+                  className="object-cover object-left-top"
+                  fill
+                  priority
+                  sizes="(min-width: 1024px) 50vw, 100vw"
+                  src="/tockli-preview.png"
+                />
+              </div>
             </div>
           </div>
         </div>
