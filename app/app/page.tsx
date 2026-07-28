@@ -987,6 +987,50 @@ export default function Home() {
     [activeProjectId, focusTask, projects, settings.focusMinutes],
   );
 
+  const playSuccessChime = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      return;
+    }
+
+    const context = audioContextRef.current ?? new AudioContextConstructor();
+    audioContextRef.current = context;
+    void context.resume();
+
+    const now = context.currentTime;
+
+    const playNote = (frequency: number, startTime: number, duration: number) => {
+      const oscillator = context.createOscillator();
+      const gainNode = context.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.value = frequency;
+
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(0.1, startTime + 0.05);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(context.destination);
+
+      oscillator.start(startTime);
+      oscillator.stop(startTime + duration);
+    };
+
+    // A friendly success chime (C5 -> E5 -> G5)
+    playNote(523.25, now, 0.4);
+    playNote(659.25, now + 0.15, 0.4);
+    playNote(783.99, now + 0.3, 0.6);
+  }, []);
+
   useEffect(() => {
     if (!isRunning) {
       return;
@@ -996,6 +1040,7 @@ export default function Home() {
       setRemainingSeconds((seconds) => {
         if (seconds <= 1) {
           window.clearInterval(interval);
+          playSuccessChime();
           completeFocusSession(sessionDurationMinutes, sessionNote);
           return settings.focusMinutes * 60;
         }
@@ -1008,6 +1053,7 @@ export default function Home() {
   }, [
     completeFocusSession,
     isRunning,
+    playSuccessChime,
     sessionDurationMinutes,
     sessionNote,
     settings.focusMinutes,
@@ -1433,6 +1479,7 @@ export default function Home() {
     setCancelStep("confirm");
     setCancelReason("");
   }
+
 
   function stopFocusSound() {
     if (audioPreviewTimeoutRef.current !== null) {
