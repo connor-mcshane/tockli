@@ -34,6 +34,7 @@ import {
   TimerReset,
   Trash2,
   Users,
+  UserCircle,
   Volume2,
   VolumeX,
   X,
@@ -4672,6 +4673,20 @@ function SettingsView({
               <span className="text-[#62605b]">Supabase backend</span>
               <span className="font-semibold text-[#25a565]">Ready</span>
             </div>
+            <Link
+              className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
+              href="/account"
+              onClick={() =>
+                trackEvent("cta_clicked", {
+                  cta: "manage_account",
+                  destination: "/account",
+                  surface: "app_settings",
+                })
+              }
+            >
+              <UserCircle size={16} aria-hidden="true" />
+              Manage account
+            </Link>
             <button
               className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
               type="button"

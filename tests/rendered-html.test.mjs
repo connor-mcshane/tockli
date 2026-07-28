@@ -65,6 +65,12 @@ test("server-renders launch marketing routes", async () => {
   assert.match(loginHtml, /Log in and pick up your next focus block/);
   assert.match(loginHtml, /Continue with Google/);
 
+  const account = await render("/account");
+  assert.equal(account.status, 200);
+  const accountHtml = await account.text();
+  assert.match(accountHtml, /Account Management/);
+  assert.match(accountHtml, /Loading account details/);
+
   const blog = await render("/blog");
   assert.equal(blog.status, 200);
   const blogHtml = await blog.text();
