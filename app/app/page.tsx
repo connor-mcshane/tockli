@@ -1333,6 +1333,34 @@ export default function Home() {
     trackEvent("project_created", { kind });
   }
 
+  function updateProjectName(projectId: string, newName: string) {
+    setProjects((current) =>
+      current.map((project) =>
+        project.id === projectId ? { ...project, name: newName } : project
+      )
+    );
+  }
+
+  function deleteProject(projectId: string) {
+    if (projects.length <= 1) return; // Cannot delete the last project
+    
+    setProjects((current) => current.filter((p) => p.id !== projectId));
+    
+    if (activeProjectId === projectId) {
+      const nextProject = projects.find((p) => p.id !== projectId);
+      if (nextProject) {
+        setActiveProjectId(nextProject.id);
+      }
+    }
+    
+    setTasks((current) => current.filter((t) => t.projectId !== projectId));
+    setCategories((current) => current.filter((c) => c.projectId !== projectId));
+    setSessions((current) => current.filter((s) => s.projectId !== projectId));
+    setCancellations((current) => current.filter((c) => c.projectId !== projectId));
+    
+    trackEvent("project_deleted");
+  }
+
   function updateFocusMinutes(minutes: number) {
     if (
       isRunning ||
@@ -1955,6 +1983,9 @@ export default function Home() {
                 authDisplayName={authDisplayName}
                 authEmail={authEmail}
                 createProject={createProject}
+                updateProjectName={updateProjectName}
+                deleteProject={deleteProject}
+                canDeleteProject={projects.length > 1}
                 onFocusMinutesChange={updateFocusMinutes}
                 onPreviewSound={previewFocusSound}
                 onSignOut={signOut}
@@ -4494,6 +4525,9 @@ function SettingsView({
   authDisplayName,
   authEmail,
   createProject,
+  updateProjectName,
+  deleteProject,
+  canDeleteProject,
   onFocusMinutesChange,
   onPreviewSound,
   onSignOut,
@@ -4506,6 +4540,9 @@ function SettingsView({
   authDisplayName: string;
   authEmail: string;
   createProject: (kind: ProjectKind) => void;
+  updateProjectName: (projectId: string, newName: string) => void;
+  deleteProject: (projectId: string) => void;
+  canDeleteProject: boolean;
   onFocusMinutesChange: (minutes: number) => void;
   onPreviewSound: (sound: FocusSound) => void;
   onSignOut: () => void;
@@ -4635,6 +4672,48 @@ function SettingsView({
             })}
           </div>
         </Panel>
+
+        {activeProject ? (
+          <Panel title="Current Project" icon={FolderKanban}>
+            <div className="space-y-4">
+              <div>
+                <label
+                  className="mb-2 block text-sm font-semibold text-[#62605b]"
+                  htmlFor="project-name-input"
+                >
+                  Project Name
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="project-name-input"
+                    type="text"
+                    className="h-11 min-w-0 flex-1 rounded-md border border-[#e8e8e6] bg-[#f9f9f7] px-3 text-sm outline-none transition focus:border-[#ff005e]"
+                    value={activeProject.name}
+                    onChange={(e) => updateProjectName(activeProject.id, e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="pt-4 border-t border-[#e8e8e6]">
+                <p className="mb-3 text-sm text-[#62605b]">
+                  Deleting a project will also permanently delete all its tasks, sessions, and categories.
+                </p>
+                <button
+                  type="button"
+                  className="flex h-11 items-center justify-center gap-2 rounded-md border border-[#ff005e] px-4 text-sm font-semibold text-[#ff005e] transition enabled:hover:bg-[#ff005e] enabled:hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!canDeleteProject}
+                  onClick={() => {
+                    if (window.confirm("Are you sure you want to delete this project? This action cannot be undone.")) {
+                      deleteProject(activeProject.id);
+                    }
+                  }}
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                  Delete Project
+                </button>
+              </div>
+            </div>
+          </Panel>
+        ) : null}
 
       </section>
 
