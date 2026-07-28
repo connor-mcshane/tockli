@@ -34,7 +34,6 @@ import {
   TimerReset,
   Trash2,
   Users,
-  UserCircle,
   Volume2,
   VolumeX,
   X,
@@ -2220,12 +2219,9 @@ export default function Home() {
             {view === "settings" ? (
               <SettingsView
                 activeProject={activeProject}
-                authDisplayName={authDisplayName}
-                authEmail={authEmail}
                 createProject={openCreateProject}
                 onFocusMinutesChange={updateFocusMinutes}
                 onPreviewSound={previewFocusSound}
-                onSignOut={signOut}
                 settings={settings}
                 setSettings={setSettings}
                 teamProjectCount={teamProjectCount}
@@ -5210,24 +5206,18 @@ function MetricCard({
 
 function SettingsView({
   activeProject,
-  authDisplayName,
-  authEmail,
   createProject,
   onFocusMinutesChange,
   onPreviewSound,
-  onSignOut,
   settings,
   setSettings,
   teamProjectCount,
   timerLocked,
 }: {
   activeProject?: Project;
-  authDisplayName: string;
-  authEmail: string;
   createProject: (kind: ProjectKind) => void;
   onFocusMinutesChange: (minutes: number) => void;
   onPreviewSound: (sound: FocusSound) => void;
-  onSignOut: () => void;
   settings: UserSettings;
   setSettings: (settings: UserSettings) => void;
   teamProjectCount: number;
@@ -5377,59 +5367,6 @@ function SettingsView({
               <Users size={17} aria-hidden="true" />
               Create Shared Project
             </button>
-          </div>
-        </Panel>
-
-        <Panel title="Account" icon={LogIn}>
-          <div className="space-y-3 text-sm">
-            <div className="rounded-md border border-[#e8e8e6] bg-[#f9f9f7] p-3">
-              <p className="font-semibold text-[#1a1c1b]">{authDisplayName}</p>
-              <p className="mt-1 truncate text-xs text-[#62605b]">{authEmail}</p>
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-[#e8e8e6] p-3">
-              <span className="text-[#62605b]">Google sign-in</span>
-              <span className="font-semibold text-[#25a565]">Ready</span>
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-[#e8e8e6] p-3">
-              <span className="text-[#62605b]">Supabase backend</span>
-              <span className="font-semibold text-[#25a565]">Ready</span>
-            </div>
-            <Link
-              className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-              href="/account"
-              onClick={() =>
-                trackEvent("cta_clicked", {
-                  cta: "manage_account",
-                  destination: "/account",
-                  surface: "app_settings",
-                })
-              }
-            >
-              <UserCircle size={16} aria-hidden="true" />
-              Manage account
-            </Link>
-            <button
-              className="flex h-10 items-center justify-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 text-sm font-semibold text-[#1a1c1b] transition hover:border-[#ff005e] hover:text-[#ff005e]"
-              type="button"
-              onClick={onSignOut}
-            >
-              <LogOut size={16} aria-hidden="true" />
-              Sign out
-            </button>
-            <Link
-              className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white transition hover:bg-[#e00054]"
-              href="/signup"
-              onClick={() =>
-                trackEvent("cta_clicked", {
-                  cta: "settings_signup",
-                  destination: "/signup",
-                  surface: "app_settings",
-                })
-              }
-            >
-              <LogIn size={16} aria-hidden="true" />
-              Add another account
-            </Link>
           </div>
         </Panel>
 
