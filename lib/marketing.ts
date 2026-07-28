@@ -14,7 +14,7 @@ export const siteConfig = {
   name: "Tockli",
   url: resolveSiteUrl(process.env.NEXT_PUBLIC_SITE_URL),
   description:
-    "A calm focus timer with a task board, session notes, lightweight sharing, and practical analytics.",
+    "A calm focus timer and task board to help you get things done.",
   ogImage: "/og.png",
 };
 
@@ -70,65 +70,65 @@ export const blogArticles: BlogArticle[] = [
     ],
   },
   {
-    slug: "lightweight-sharing-for-small-teams",
-    title: "Lightweight sharing is enough for many focus-heavy teams",
+    slug: "build-better-personal-habits",
+    title: "Build better habits with simple daily tracking",
     description:
-      "Shared projects do not always need enterprise process. Sometimes a common board, visible ownership, and calm focus blocks are the useful layer.",
+      "Your productivity system doesn't need to be complicated. A simple board and a focus timer are enough to build momentum.",
     publishedAt: "2026-07-24",
     readMinutes: 3,
-    category: "Team Focus",
-    keywords: ["shared projects", "team productivity", "focus sessions"],
+    category: "Productivity",
+    keywords: ["personal productivity", "habits", "focus sessions"],
     sections: [
       {
-        heading: "Not every shared project needs a heavyweight workspace",
+        heading: "Keep your workflow simple",
         body: [
-          "Small launch teams often need one shared lane of work, not another full operating system. A shared Tockli project is designed for that middle ground.",
-          "The free-plan guard starts with one shared project because the product should prove that small collaborative focus is worth protecting before it grows into plan complexity.",
+          "Many tools overcomplicate the simple act of doing work. You don't need endless sub-menus to focus.",
+          "Tockli is built for you, giving you a clean space to capture your next task and focus on it deeply.",
         ],
       },
       {
         heading: "Visible focus beats invisible effort",
         body: [
-          "When focus sessions attach to tasks, teammates can understand movement without asking for a status update. A card shows what changed, and the session note explains what mattered.",
-          "That makes async collaboration a little quieter. The app creates context at the moment work happens.",
+          "When focus sessions attach to tasks, you can understand your movement without overthinking. A card shows what changed, and the session note explains what mattered.",
+          "This helps you reflect on your work and start tomorrow with a clearer mind.",
         ],
       },
       {
-        heading: "The backend path is ready for the next pass",
+        heading: "Stay calm and focused",
         body: [
-          "The Supabase schema already models profiles, project members, tasks, tags, subtasks, focus sessions, and user settings. That gives the shared project idea a real persistence path when authentication is connected.",
+          "You deserve a tool that gets out of the way. No noisy dashboards, just your work and the time you need to complete it.",
         ],
       },
     ],
   },
   {
     slug: "analytics-that-help-you-focus",
-    title: "Focus analytics should answer what to do next",
+    title: "Focus analytics that actually help you improve",
     description:
-      "A small measurement framework for focus work: track intent, completion, and rhythm before adding dashboards nobody uses.",
+      "A small measurement framework for personal work: track your habits, completion, and rhythm to learn what works best.",
     publishedAt: "2026-07-24",
     readMinutes: 4,
     category: "Analytics",
-    keywords: ["focus analytics", "product analytics", "event tracking"],
+    keywords: ["focus analytics", "personal insights", "tracking"],
     sections: [
       {
-        heading: "Pick events that describe the product loop",
+        heading: "Pick events that describe your daily loop",
         body: [
-          "A focus app does not need dozens of charts on day one. It needs to know whether people create tasks, start timers, complete sessions, and return to useful notes.",
-          "Those events map directly to the product promise. They also make onboarding and pricing experiments easier to read later.",
+          "A focus app does not need dozens of charts. It needs to show you when you do your best work and how your momentum builds over the week.",
+          "Seeing your completed sessions helps you understand your productivity patterns.",
         ],
       },
       {
-        heading: "Separate product analytics from marketing analytics",
+        heading: "Review your past week",
         body: [
-          "Marketing events explain how someone arrived and which message earned a signup. Product events explain whether Tockli became part of their workday.",
-          "Keeping those names explicit now prevents a muddy event stream when the landing page, signup flow, and app are all live.",
+          "Taking time at the end of the week to look at your notes and focus minutes can help you plan better for the next one.",
+          "Keep it simple: Did you focus on the right things?",
         ],
       },
       {
-        heading: "A/B testing can stay humble",
+        heading: "A personal rhythm",
         body: [
-          "The first experiment should be narrow: one landing-page headline or one signup call to action. Deterministic assignment and exposure tracking are enough to learn without adding a heavy experimentation service.",
+          "The goal is not to maximize time spent working, but to ensure that the time you do spend working is protected and productive.",
         ],
       },
     ],

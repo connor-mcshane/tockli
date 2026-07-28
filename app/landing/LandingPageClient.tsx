@@ -8,7 +8,7 @@ import {
   FolderKanban,
   Sparkles,
   TimerReset,
-  Users,
+  CheckSquare,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -22,22 +22,22 @@ type LandingHeroVariant = (typeof landingHeroExperiment.variants)[number];
 const featureCards = [
   {
     title: "Task-first focus",
-    description: "Pick the card first, then protect the next block of work.",
+    description: "Pick a task first, then start the timer to protect your focus.",
     icon: FolderKanban,
   },
   {
     title: "Clean session notes",
-    description: "Save the decision, link, or next step while the context is fresh.",
+    description: "Save your thoughts, links, or next steps while the context is fresh.",
     icon: Clock3,
   },
   {
-    title: "Quiet sharing",
-    description: "Keep a small project visible without turning focus into status work.",
-    icon: Users,
+    title: "Simple task tracking",
+    description: "Keep track of your personal tasks without the overhead of complex tools.",
+    icon: CheckSquare,
   },
   {
-    title: "Useful rhythm",
-    description: "See completion, minutes, and recent notes before planning what comes next.",
+    title: "Personal insights",
+    description: "See your completion, focus minutes, and notes to reflect on your day.",
     icon: BarChart3,
   },
 ];
@@ -92,7 +92,7 @@ export default function LandingPageClient() {
               Blog
             </Link>
             <Link className="transition hover:text-[#ff005e]" href="/app">
-              Workspace
+              App
             </Link>
             <Link className="transition hover:text-[#ff005e]" href="/login">
               Log in
@@ -133,7 +133,7 @@ export default function LandingPageClient() {
             </p>
             <p className="mt-5 max-w-xl text-lg leading-8 text-[#4f4d49] sm:text-xl">
               Tockli brings your task board, focus timer, notes, and daily
-              rhythm into one calm workspace for deep work.
+              rhythm into one calm app for getting things done.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link
@@ -149,11 +149,11 @@ export default function LandingPageClient() {
                 href="/app"
                 onClick={() => trackCta("hero_open_app", "/app")}
               >
-                Open workspace
+                Open the app
               </Link>
             </div>
             <div className="mt-8 flex flex-wrap gap-2 text-sm font-semibold text-[#4f4d49]">
-              {["No noisy dashboards", "Notes tied to sessions", "Made for small focus loops"].map(
+              {["A clean, peaceful interface", "Save your thoughts", "Built for your personal workflow"].map(
                 (item) => (
                   <span
                     key={item}
@@ -172,9 +172,9 @@ export default function LandingPageClient() {
         <div className="mx-auto grid max-w-7xl gap-4 md:grid-cols-4">
           {[
             ["25", "minute default focus block"],
-            ["1", "shared project to start"],
+            ["1", "personal focus board"],
             ["7", "day rhythm snapshot"],
-            ["0", "extra tabs to run a session"],
+            ["0", "distractions to run a session"],
           ].map(([value, label]) => (
             <div key={label} className="border-l-2 border-[#ff005e] pl-4">
               <div className="text-3xl font-semibold">{value}</div>
@@ -222,10 +222,10 @@ export default function LandingPageClient() {
           <div className="flex flex-wrap items-end justify-between gap-5">
             <div className="max-w-2xl">
               <p className="text-sm font-semibold uppercase text-[#b90042]">
-                Workspace preview
+                App preview
               </p>
               <h2 className="mt-2 text-3xl font-semibold sm:text-4xl">
-                Your plan and your timer stay on the same surface.
+                Your plan and your timer stay on the same screen.
               </h2>
             </div>
             <Link
@@ -233,13 +233,13 @@ export default function LandingPageClient() {
               href="/app"
               onClick={() => trackCta("preview_open_app", "/app")}
             >
-              Try the workspace
+              Try the app
               <ArrowRight size={16} aria-hidden="true" />
             </Link>
           </div>
           <div className="mt-8 overflow-hidden rounded-lg border border-[#d8d7d3] bg-[#f7f7f5] shadow-[0_18px_60px_rgba(26,28,27,0.12)]">
             <Image
-              alt="A Tockli workspace showing tasks, a focus timer, notes, and focus analytics."
+              alt="A Tockli app screen showing tasks, a focus timer, notes, and focus analytics."
               className="h-auto w-full"
               height={720}
               sizes="(min-width: 1280px) 1152px, 100vw"
@@ -257,10 +257,10 @@ export default function LandingPageClient() {
               Designed to stay calm
             </p>
             <h2 className="mt-2 text-3xl font-semibold sm:text-4xl">
-              Enough structure to focus. Not enough to become the work.
+              Your personal productivity helper.
             </h2>
             <p className="mt-4 text-lg leading-8 text-[#d8d7d3]">
-              Use Tockli when you need a clear next block, a visible task, and
+              Use Tockli when you need a clear next step, a visible task, and
               a short note that makes tomorrow easier.
             </p>
           </div>
@@ -268,10 +268,10 @@ export default function LandingPageClient() {
             {[
               "Task board and timer together",
               "Session notes with context",
-              "Small-team sharing path",
+              "Your personal focus history",
               "Daily rhythm without clutter",
               "Fast signup and login",
-              "Content built for discovery",
+              "Made for individuals",
             ].map((item) => (
               <div key={item} className="flex items-center gap-3 text-sm">
                 <CheckCircle2 className="text-[#25d67c]" size={18} aria-hidden="true" />
@@ -289,10 +289,10 @@ export default function LandingPageClient() {
               <p className="text-sm font-semibold uppercase text-[#b90042]">
                 Field notes
               </p>
-              <h2 className="mt-2 text-3xl font-semibold">Launch blog</h2>
+              <h2 className="mt-2 text-3xl font-semibold">Productivity Tips</h2>
               <p className="mt-3 max-w-xl text-sm leading-6 text-[#62605b]">
-                Short articles on focus systems, async collaboration, and useful
-                measurement for deep work.
+                Short articles on focus systems, personal productivity, and building
+                better habits for deep work.
               </p>
             </div>
             <Link

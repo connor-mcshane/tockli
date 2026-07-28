@@ -43,15 +43,15 @@ test("server-renders launch marketing routes", async () => {
   const home = await render("/");
   assert.equal(home.status, 200);
   const homeHtml = await home.text();
-  assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
-  assert.match(homeHtml, /Launch blog/);
+  assert.match(homeHtml, /Your personal timer and task board/);
+  assert.match(homeHtml, /Productivity Tips/);
   assert.match(homeHtml, /href="\/app"/);
 
   const landing = await render("/landing");
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
-  assert.match(landingHtml, /Turn a messy task list into one protected focus block/);
-  assert.match(landingHtml, /Launch blog/);
+  assert.match(landingHtml, /Your personal timer and task board/);
+  assert.match(landingHtml, /Productivity Tips/);
 
   const signup = await render("/signup");
   assert.equal(signup.status, 200);

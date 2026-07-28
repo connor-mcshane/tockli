@@ -4,14 +4,14 @@ import LandingPageClient from "./LandingPageClient";
 export const metadata: Metadata = {
   title: "Tockli - Focus timer and task board",
   description:
-    "Tockli connects a calm task board, focus timer, session notes, sharing, and analytics for deep work.",
+    "Tockli is a calm task board and focus timer to help you get things done.",
   alternates: {
     canonical: "/",
   },
   openGraph: {
     title: "Tockli - Focus timer and task board",
     description:
-      "Plan the work, run the timer, and keep useful proof of each focus session.",
+      "Plan your day, start the timer, and focus on what matters.",
     images: ["/og.png"],
     url: "/",
   },

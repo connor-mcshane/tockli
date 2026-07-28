@@ -96,16 +96,16 @@ export const landingHeroExperiment = {
     {
       id: "task-first",
       label: "Task-first promise",
-      eyebrow: "Focus starts from the card",
-      headline: "Turn a messy task list into one protected focus block.",
-      cta: "Join early access",
+      eyebrow: "Focus on what matters",
+      headline: "Your personal timer and task board for getting things done.",
+      cta: "Start focusing",
     },
     {
       id: "rhythm-first",
       label: "Rhythm-first promise",
-      eyebrow: "A quieter rhythm for deep work",
-      headline: "Plan the work, run the timer, keep the proof.",
-      cta: "Start with Tockli",
+      eyebrow: "A simpler way to work",
+      headline: "Plan your day, start the timer, and focus.",
+      cta: "Try Tockli for free",
     },
   ],
 } as const;

@@ -27,7 +27,7 @@ const roleOptions = [
   "Designer",
   "Engineer",
   "Student",
-  "Team lead",
+  "Creator",
   "Other",
 ];
 
@@ -306,7 +306,7 @@ export default function SignupForm() {
             around the way you work.
           </p>
           <div className="mt-6 grid gap-2 text-sm font-semibold text-[#4f4d49] sm:grid-cols-3 lg:grid-cols-1">
-            {["Task-first timer", "Session notes", "Small-team ready"].map((item) => (
+            {["Task-first timer", "Session notes", "Track your progress"].map((item) => (
               <div
                 key={item}
                 className="flex items-center gap-2 rounded-md border border-[#e8e8e6] bg-white px-3 py-2"
@@ -402,8 +402,8 @@ export default function SignupForm() {
                     onChange={(event) => setIntent(event.target.value)}
                   >
                     <option value="personal-focus">Personal focus</option>
-                    <option value="shared-project">Shared project</option>
-                    <option value="team-rhythm">Team rhythm</option>
+                    <option value="hobby-project">Hobby project</option>
+                    <option value="daily-rhythm">Daily rhythm</option>
                   </select>
                 </label>
               </div>
