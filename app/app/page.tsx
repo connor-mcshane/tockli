@@ -1159,8 +1159,9 @@ export default function Home() {
     }
 
     const frame = window.requestAnimationFrame(() => {
-      const onboardingRequested =
-        new URLSearchParams(window.location.search).get("onboarding") === "1";
+      const params = new URLSearchParams(window.location.search);
+      const inviteToken = params.get("invite");
+      const onboardingRequested = params.get("onboarding") === "1" && !inviteToken;
 
       if (onboardingRequested) {
         setOnboardingOpen(true);
@@ -1206,10 +1207,16 @@ export default function Home() {
           }
         } catch {
           window.localStorage.removeItem(storageKey);
-          setOnboardingOpen(true);
+          setOnboardingOpen(!inviteToken);
+          if (inviteToken) {
+            setHydrated(true);
+          }
         }
       } else {
-        setOnboardingOpen(true);
+        setOnboardingOpen(!inviteToken);
+        if (inviteToken) {
+          setHydrated(true);
+        }
       }
 
       if (stored || legacyStored) {
