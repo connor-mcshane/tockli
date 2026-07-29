@@ -726,6 +726,18 @@ function normalizeProjectRole(role?: string | null): ProjectRole {
   return role === "owner" ? "owner" : "viewer";
 }
 
+function normalizeStoredProjectRole(project: Partial<Project>): ProjectRole {
+  if (project.currentUserRole === "owner") {
+    return "owner";
+  }
+
+  if (!project.id || !isUuid(project.id)) {
+    return "owner";
+  }
+
+  return normalizeProjectRole(project.currentUserRole);
+}
+
 function normalizeProjectMembers(
   members: Array<Partial<ProjectMember>> | undefined,
   fallbackCount = 1,
@@ -871,7 +883,7 @@ function normalizeProjects(projects?: Array<Partial<Project>>): Project[] {
       kind: project.kind ?? "personal",
       color: project.color || "#ff005e",
       memberEmails,
-      currentUserRole: normalizeProjectRole(project.currentUserRole),
+      currentUserRole: normalizeStoredProjectRole(project),
       teamMembers,
       pendingInvites: normalizeProjectInvites(project.pendingInvites),
       members: Math.max(project.members ?? 1, teamMembers.length),
