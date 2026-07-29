@@ -106,6 +106,17 @@ async function runSmoke() {
     const callbackHtml = await fetchText(baseUrl, "/auth/callback?next=/app");
     assert.match(callbackHtml, /Finishing sign in/);
 
+    const inviteResponse = await fetch(`${baseUrl}/api/project-invites`, {
+      body: JSON.stringify({
+        email: "teammate@example.com",
+        projectId: "11111111-1111-4111-8111-111111111111",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(inviteResponse.status, 401);
+    assert.match(await inviteResponse.text(), /Authentication required/);
+
     const appHtml = await fetchText(baseUrl, "/app");
     assert.match(appHtml, /Checking your session/);
     assert.match(appHtml, /open your workspace once login is confirmed/);

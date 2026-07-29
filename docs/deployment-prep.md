@@ -28,11 +28,19 @@ NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
+SUPABASE_SERVICE_ROLE_KEY=
+RESEND_API_KEY=
+INVITE_FROM_EMAIL=
 ```
 
 `NEXT_PUBLIC_SIGNUP_ENDPOINT` is optional when Supabase is configured because
 the signup page inserts into `public.marketing_signups`. Keep it for a separate
 email or CRM collector later.
+
+`SUPABASE_SERVICE_ROLE_KEY` is server-only and required for project invite
+creation/delivery. `RESEND_API_KEY` and `INVITE_FROM_EMAIL` are optional; when
+they are set, project invites are sent as branded transactional emails. Without
+them, the invite route uses Supabase's built-in invite email template.
 
 ## Backend Checklist
 
@@ -75,6 +83,9 @@ Required GitHub repository secrets:
 ```bash
 NETLIFY_AUTH_TOKEN=
 NETLIFY_SITE_ID=
+SUPABASE_SERVICE_ROLE_KEY=
+RESEND_API_KEY=
+INVITE_FROM_EMAIL=
 ```
 
 Required GitHub repository variables:

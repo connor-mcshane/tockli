@@ -730,17 +730,24 @@ function normalizeProjectMembers(
   members: Array<Partial<ProjectMember>> | undefined,
   fallbackCount = 1,
 ): ProjectMember[] {
-  const normalized = (members ?? [])
-    .map((member, index) => ({
-      id: member.id?.trim() || createId("member"),
-      name:
-        member.name?.trim() ||
-        member.email?.split("@")[0] ||
-        `Project user ${index + 1}`,
-      email: normalizeEmail(member.email ?? ""),
-      role: normalizeProjectRole(member.role),
-      joinedAt: member.joinedAt,
-    }))
+  const normalized: ProjectMember[] = (members ?? [])
+    .map((member, index) => {
+      const normalizedMember: ProjectMember = {
+        id: member.id?.trim() || createId("member"),
+        name:
+          member.name?.trim() ||
+          member.email?.split("@")[0] ||
+          `Project user ${index + 1}`,
+        email: normalizeEmail(member.email ?? ""),
+        role: normalizeProjectRole(member.role),
+      };
+
+      if (member.joinedAt) {
+        normalizedMember.joinedAt = member.joinedAt;
+      }
+
+      return normalizedMember;
+    })
     .filter((member) => member.name || member.email);
 
   if (!normalized.length) {
@@ -768,14 +775,21 @@ function normalizeProjectInvites(
   invites?: Array<Partial<ProjectInvite>>,
 ): ProjectInvite[] {
   return (invites ?? [])
-    .map((invite) => ({
-      id: invite.id ?? createId("invite"),
-      email: normalizeEmail(invite.email ?? ""),
-      token: invite.token ?? createInviteToken(),
-      status: invite.status === "accepted" ? "accepted" : "pending",
-      invitedAt: invite.invitedAt ?? new Date().toISOString(),
-      acceptedAt: invite.acceptedAt,
-    }))
+    .map((invite) => {
+      const normalizedInvite: ProjectInvite = {
+        id: invite.id ?? createId("invite"),
+        email: normalizeEmail(invite.email ?? ""),
+        token: invite.token ?? createInviteToken(),
+        status: invite.status === "accepted" ? "accepted" : "pending",
+        invitedAt: invite.invitedAt ?? new Date().toISOString(),
+      };
+
+      if (invite.acceptedAt) {
+        normalizedInvite.acceptedAt = invite.acceptedAt;
+      }
+
+      return normalizedInvite;
+    })
     .filter((invite) => isValidEmail(invite.email));
 }
 
@@ -793,16 +807,6 @@ function getInviteUrl(token: string) {
   }
 
   return `${window.location.origin}/app?invite=${encodeURIComponent(token)}`;
-}
-
-function getInviteAuthRedirect(token: string) {
-  if (typeof window === "undefined") {
-    return `/auth/callback?next=${encodeURIComponent(`/app?invite=${token}`)}`;
-  }
-
-  return `${window.location.origin}/auth/callback?next=${encodeURIComponent(
-    `/app?invite=${token}`,
-  )}`;
 }
 
 function openInviteEmailDraft(email: string, projectName: string, token: string) {
@@ -1274,7 +1278,7 @@ export default function Home() {
 
       const membershipRows = (membershipData ?? []) as RemoteMembershipRow[];
       const remoteProjects = membershipRows
-        .map((membership) => {
+        .map((membership): Project | null => {
           const remoteProject = relationOne(membership.projects);
           if (!remoteProject) {
             return null;
@@ -1296,7 +1300,7 @@ export default function Home() {
             teamMembers: [],
             pendingInvites: [],
             columns: normalizeBoardColumns(columns),
-          } satisfies Project;
+          };
         })
         .filter((project): project is Project => Boolean(project));
 
@@ -1411,7 +1415,8 @@ export default function Home() {
           await refreshRemoteWorkspace(acceptedProject.project_id);
         }
       } else {
-        let acceptedProject: Project | null = null;
+        let acceptedProjectId = "";
+        let acceptedProjectName = "";
         const invitedEmail = normalizeEmail(authEmail);
 
         setProjects((currentProjects) =>
@@ -1437,7 +1442,7 @@ export default function Home() {
               ...project.teamMembers,
               member,
             ]);
-            acceptedProject = {
+            const acceptedProject: Project = {
               ...project,
               kind: "team",
               teamMembers,
@@ -1446,13 +1451,15 @@ export default function Home() {
                 (item) => item.id !== invite.id,
               ),
             };
+            acceptedProjectId = acceptedProject.id;
+            acceptedProjectName = acceptedProject.name;
             return acceptedProject;
           }),
         );
 
-        if (acceptedProject) {
-          setActiveProjectId(acceptedProject.id);
-          setProjectNotice(`Invite accepted for ${acceptedProject.name}.`);
+        if (acceptedProjectId) {
+          setActiveProjectId(acceptedProjectId);
+          setProjectNotice(`Invite accepted for ${acceptedProjectName}.`);
         } else {
           setProjectNotice("This invite link was not found in this browser.");
         }
@@ -2120,26 +2127,45 @@ export default function Home() {
     return migratedProject;
   }
 
-  async function deliverInviteEmail(email: string, projectName: string, token: string) {
-    if (supabase) {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: getInviteAuthRedirect(token),
-          shouldCreateUser: true,
-          data: {
-            invite_project: projectName,
-          },
-        },
-      });
+  async function sendRemoteProjectInvite(project: Project, email: string) {
+    const { data, error } = await supabase!.auth.getSession();
 
-      if (error) {
-        throw new Error(error.message);
-      }
-
-      return "sent";
+    if (error) {
+      throw new Error(error.message);
     }
 
+    const accessToken = data.session?.access_token;
+    if (!accessToken) {
+      throw new Error("Log in again before inviting team members.");
+    }
+
+    const response = await fetch("/api/project-invites", {
+      body: JSON.stringify({
+        email,
+        projectId: project.id,
+      }),
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      method: "POST",
+    });
+    const payload = (await response
+      .json()
+      .catch(() => null)) as { error?: string; invitation?: RemoteInviteRow } | null;
+
+    if (!response.ok) {
+      throw new Error(payload?.error ?? "Project invite email could not be sent.");
+    }
+
+    if (!payload?.invitation) {
+      throw new Error("Project invite email could not be sent.");
+    }
+
+    return mapRemoteInvite(payload.invitation);
+  }
+
+  async function deliverLocalInviteEmail(email: string, projectName: string, token: string) {
     openInviteEmailDraft(email, projectName, token);
     return "draft";
   }
@@ -2158,44 +2184,9 @@ export default function Home() {
 
     for (const email of inviteEmails) {
       if (supabase && authUser && isUuid(project.id)) {
-        const { data, error } = await supabase
-          .from("project_invitations")
-          .insert({
-            invited_by: authUser.id,
-            invited_email: email,
-            project_id: project.id,
-            role: "viewer",
-          })
-          .select("id,project_id,invited_email,token,status,created_at,accepted_at")
-          .single();
-
-        let inviteRow = data as RemoteInviteRow | null;
-
-        if (error) {
-          const { data: existingInvite, error: existingError } = await supabase
-            .from("project_invitations")
-            .select("id,project_id,invited_email,token,status,created_at,accepted_at")
-            .eq("project_id", project.id)
-            .eq("invited_email", email)
-            .eq("status", "pending")
-            .maybeSingle();
-
-          if (existingError || !existingInvite) {
-            throw new Error(error.message);
-          }
-
-          inviteRow = existingInvite as RemoteInviteRow;
-        }
-
-        if (!inviteRow) {
-          throw new Error("Project invite could not be created.");
-        }
-
-        const invite = mapRemoteInvite(inviteRow);
+        const invite = await sendRemoteProjectInvite(project, email);
         createdInvites.push(invite);
-        const delivery = await deliverInviteEmail(email, project.name, invite.token);
-        sentCount += delivery === "sent" ? 1 : 0;
-        draftCount += delivery === "draft" ? 1 : 0;
+        sentCount += 1;
       } else {
         const invite: ProjectInvite = {
           id: createId("invite"),
@@ -2205,9 +2196,12 @@ export default function Home() {
           invitedAt: new Date().toISOString(),
         };
         createdInvites.push(invite);
-        const delivery = await deliverInviteEmail(email, project.name, invite.token);
-        sentCount += delivery === "sent" ? 1 : 0;
-        draftCount += delivery === "draft" ? 1 : 0;
+        await deliverLocalInviteEmail(
+          email,
+          project.name,
+          invite.token,
+        );
+        draftCount += 1;
       }
     }
 

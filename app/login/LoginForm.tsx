@@ -264,7 +264,10 @@ export default function LoginForm() {
 
           <p className="mt-5 text-center text-sm text-[#62605b]">
             New to Tockli?{" "}
-            <Link className="font-semibold text-[#ff005e]" href="/signup">
+            <Link
+              className="font-semibold text-[#ff005e]"
+              href={`/signup?next=${encodeURIComponent(nextPath)}`}
+            >
               Create an account
             </Link>
           </p>

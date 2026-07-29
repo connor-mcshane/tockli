@@ -34,8 +34,16 @@ function isDuplicateSignup(error: { code?: string; message?: string }) {
   return error.code === "23505" || /duplicate|unique/i.test(error.message ?? "");
 }
 
-function getAuthRedirect() {
-  return `${window.location.origin}/auth/callback?next=${encodeURIComponent("/app?onboarding=1")}`;
+function getSafeNext(value: string | null) {
+  if (value?.startsWith("/") && !value.startsWith("//")) {
+    return value;
+  }
+
+  return "/app?onboarding=1";
+}
+
+function getAuthRedirect(nextPath: string) {
+  return `${window.location.origin}/auth/callback?next=${encodeURIComponent(nextPath)}`;
 }
 
 export default function SignupForm() {
@@ -46,6 +54,7 @@ export default function SignupForm() {
   const [intent, setIntent] = useState("personal-focus");
   const [status, setStatus] = useState<SignupStatus>("idle");
   const [message, setMessage] = useState("");
+  const [nextPath, setNextPath] = useState("/app?onboarding=1");
   const [source, setSource] = useState("direct");
   const [experiment, setExperiment] = useState<{ id: string; variant: string }>({
     id: landingHeroExperiment.id,
@@ -56,7 +65,9 @@ export default function SignupForm() {
     const params = new URLSearchParams(window.location.search);
     const assignedVariant = getExperimentVariant(landingHeroExperiment);
     const sourceParam = params.get("source");
+    const safeNext = getSafeNext(params.get("next"));
     window.requestAnimationFrame(() => {
+      setNextPath(safeNext);
       setSource(sourceParam ?? (document.referrer ? "referral" : "direct"));
       setExperiment({
         id: landingHeroExperiment.id,
@@ -172,7 +183,7 @@ export default function SignupForm() {
             intent,
             role,
           },
-          emailRedirectTo: getAuthRedirect(),
+          emailRedirectTo: getAuthRedirect(nextPath),
         },
       });
 
@@ -197,7 +208,7 @@ export default function SignupForm() {
       setStatus("success");
       if (data.session) {
         setMessage("Account created. Let’s set up your workspace...");
-        window.setTimeout(() => window.location.assign("/app?onboarding=1"), 600);
+        window.setTimeout(() => window.location.assign(nextPath), 600);
       } else {
         setMessage("Account created. Check your email to confirm, then log in.");
       }
@@ -235,7 +246,7 @@ export default function SignupForm() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: getAuthRedirect(),
+        redirectTo: getAuthRedirect(nextPath),
       },
     });
 

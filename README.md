@@ -140,6 +140,10 @@ GitHub Actions expects these repository secrets:
 ```bash
 NETLIFY_AUTH_TOKEN=
 NETLIFY_SITE_ID=
+SUPABASE_SERVICE_ROLE_KEY=
+# Optional for branded project invite emails:
+RESEND_API_KEY=
+INVITE_FROM_EMAIL=
 ```
 
 GitHub Actions expects these repository variables:
@@ -153,6 +157,11 @@ NEXT_PUBLIC_ANALYTICS_DEBUG=false
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
+
+Netlify production also needs the server-only `SUPABASE_SERVICE_ROLE_KEY` for
+project invite creation and delivery. Add `RESEND_API_KEY` and
+`INVITE_FROM_EMAIL` if you want branded project invite emails to existing users;
+without those, Tockli uses Supabase's built-in invite email template.
 
 Production deploys run automatically on pushes to `main` after lint, the
 Cloudflare/Sites render smoke test, and the Netlify `next build` all pass.

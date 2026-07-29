@@ -53,6 +53,9 @@ jobs:
           NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
           NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
           NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL }}
 
   deploy:
     name: Deploy to Netlify
@@ -69,6 +72,9 @@ jobs:
       NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
       NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
       NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL }}
     steps:
       - name: Skip deploy until Netlify secrets exist
         if: env.NETLIFY_AUTH_TOKEN == '' || env.NETLIFY_SITE_ID == ''
