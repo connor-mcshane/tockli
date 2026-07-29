@@ -486,6 +486,10 @@ create policy "Project members read projects"
 on public.projects for select
 using (public.is_project_member(id));
 
+create policy "Owners read owned projects"
+on public.projects for select
+using (owner_id = auth.uid());
+
 create policy "Users create owned projects"
 on public.projects for insert
 with check (owner_id = auth.uid());
