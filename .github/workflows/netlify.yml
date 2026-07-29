@@ -46,16 +46,16 @@ jobs:
       - name: Test local production deployment
         run: pnpm run test:prod
         env:
-          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
-          NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
-          NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
-          NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL || vars.NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ secrets.NEXT_PUBLIC_ANALYTICS_ENDPOINT || vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
+          NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ secrets.NEXT_PUBLIC_ANALYTICS_DEBUG || vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
+          NEXT_PUBLIC_EXPERIMENT_SALT: ${{ secrets.NEXT_PUBLIC_EXPERIMENT_SALT || vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
+          NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ secrets.NEXT_PUBLIC_SIGNUP_ENDPOINT || vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL }}
+          INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL || vars.INVITE_FROM_EMAIL }}
 
   deploy:
     name: Deploy to Netlify
@@ -64,17 +64,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-      NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
-      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-      NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
-      NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
-      NEXT_PUBLIC_EXPERIMENT_SALT: ${{ vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
-      NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
+      NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID || vars.NETLIFY_SITE_ID }}
+      NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL || vars.NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || vars.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+      NEXT_PUBLIC_ANALYTICS_ENDPOINT: ${{ secrets.NEXT_PUBLIC_ANALYTICS_ENDPOINT || vars.NEXT_PUBLIC_ANALYTICS_ENDPOINT }}
+      NEXT_PUBLIC_ANALYTICS_DEBUG: ${{ secrets.NEXT_PUBLIC_ANALYTICS_DEBUG || vars.NEXT_PUBLIC_ANALYTICS_DEBUG || 'false' }}
+      NEXT_PUBLIC_EXPERIMENT_SALT: ${{ secrets.NEXT_PUBLIC_EXPERIMENT_SALT || vars.NEXT_PUBLIC_EXPERIMENT_SALT || 'tockli-2026-launch' }}
+      NEXT_PUBLIC_SIGNUP_ENDPOINT: ${{ secrets.NEXT_PUBLIC_SIGNUP_ENDPOINT || vars.NEXT_PUBLIC_SIGNUP_ENDPOINT }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-      INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL }}
+      INVITE_FROM_EMAIL: ${{ secrets.INVITE_FROM_EMAIL || vars.INVITE_FROM_EMAIL }}
     steps:
       - name: Skip deploy until Netlify secrets exist
         if: env.NETLIFY_AUTH_TOKEN == '' || env.NETLIFY_SITE_ID == ''
@@ -100,6 +100,67 @@ jobs:
       - name: Install dependencies
         if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
         run: pnpm install --frozen-lockfile
+
+      - name: Verify production environment
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: |
+          set -euo pipefail
+
+          missing=0
+          require_env() {
+            local key="$1"
+            if [ -z "${!key:-}" ]; then
+              echo "::error title=Missing required GitHub secret::$key is empty. Add it under repository Settings > Secrets and variables > Actions."
+              missing=1
+            fi
+          }
+
+          require_env NEXT_PUBLIC_SITE_URL
+          require_env NEXT_PUBLIC_SUPABASE_URL
+          require_env NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+          require_env SUPABASE_SERVICE_ROLE_KEY
+          require_env RESEND_API_KEY
+          require_env INVITE_FROM_EMAIL
+
+          exit "$missing"
+
+      - name: Sync Netlify production environment
+        if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
+        run: |
+          set -euo pipefail
+
+          netlify() {
+            pnpm --package=netlify-cli@27.0.0 dlx netlify "$@"
+          }
+
+          sync_env() {
+            local key="$1"
+            shift
+            local value="${!key:-}"
+
+            if [ -z "$value" ]; then
+              echo "::notice title=Skipped empty Netlify environment variable::$key was empty."
+              return
+            fi
+
+            netlify env:set "$key" "$value" \
+              --context production \
+              --force \
+              --site "$NETLIFY_SITE_ID" \
+              --auth "$NETLIFY_AUTH_TOKEN" \
+              "$@"
+          }
+
+          sync_env NEXT_PUBLIC_SITE_URL
+          sync_env NEXT_PUBLIC_SUPABASE_URL
+          sync_env NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+          sync_env NEXT_PUBLIC_ANALYTICS_ENDPOINT
+          sync_env NEXT_PUBLIC_ANALYTICS_DEBUG
+          sync_env NEXT_PUBLIC_EXPERIMENT_SALT
+          sync_env NEXT_PUBLIC_SIGNUP_ENDPOINT
+          sync_env INVITE_FROM_EMAIL
+          sync_env SUPABASE_SERVICE_ROLE_KEY --secret
+          sync_env RESEND_API_KEY --secret
 
       - name: Deploy production
         if: env.NETLIFY_AUTH_TOKEN != '' && env.NETLIFY_SITE_ID != ''
