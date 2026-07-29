@@ -2435,7 +2435,7 @@ export default function Home() {
     }
   }
 
-  function deleteProject(projectId: string) {
+  async function deleteProject(projectId: string) {
     const project = projects.find((item) => item.id === projectId);
 
     if (
@@ -2444,6 +2444,14 @@ export default function Home() {
       (isRunning && focusTask?.projectId === projectId)
     ) {
       return;
+    }
+
+    if (supabase && authUser && isUuid(project.id)) {
+      const { error } = await supabase.from("projects").delete().eq("id", project.id);
+
+      if (error) {
+        throw new Error(error.message);
+      }
     }
 
     const nextProject = projects.find((item) => item.id !== projectId);
@@ -3463,7 +3471,7 @@ function ProjectDialog({
   initialKind: ProjectKind;
   mode: ProjectDialogMode;
   onClose: () => void;
-  onDelete: (projectId: string) => void;
+  onDelete: (projectId: string) => Promise<void>;
   onSave: (values: ProjectDialogValues) => Promise<void>;
   planTier: PlanTier;
   project?: Project;
@@ -3583,6 +3591,24 @@ function ProjectDialog({
       });
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Project could not be saved.");
+      setSaving(false);
+    }
+  }
+
+  async function deleteCurrentProject() {
+    if (!project || !canDelete || deleteDisabled) {
+      return;
+    }
+
+    setSaving(true);
+    setMessage("");
+
+    try {
+      await onDelete(project.id);
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Project could not be deleted.",
+      );
       setSaving(false);
     }
   }
@@ -3896,7 +3922,7 @@ function ProjectDialog({
                   className="flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--accent-border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--danger)] transition enabled:hover:bg-[var(--accent-soft)] disabled:cursor-not-allowed disabled:opacity-45"
                   disabled={!canDelete || deleteDisabled || saving}
                   type="button"
-                  onClick={() => onDelete(project.id)}
+                  onClick={deleteCurrentProject}
                 >
                   <Trash2 size={16} aria-hidden="true" />
                   Delete

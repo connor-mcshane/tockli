@@ -37,13 +37,15 @@ function getBearerToken(request: NextRequest) {
   return match?.[1]?.trim() ?? "";
 }
 
+function cleanEnv(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
 function getSupabaseEnv() {
   return {
-    publishableKey:
-      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    serviceRoleKey: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
+    url: cleanEnv(process.env.NEXT_PUBLIC_SUPABASE_URL),
   };
 }
 
@@ -136,12 +138,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 
-  const { publishableKey, serviceRoleKey, url } = getSupabaseEnv();
-  if (!url || !publishableKey || !serviceRoleKey) {
+  const { serviceRoleKey, url } = getSupabaseEnv();
+  if (!url || !serviceRoleKey) {
     return NextResponse.json(
       {
         error:
-          "Project invite email delivery is not configured. Add NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, and SUPABASE_SERVICE_ROLE_KEY.",
+          "Project invite email delivery is not configured. Add NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.",
       },
       { status: 503 },
     );
@@ -165,17 +167,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Project could not be found." }, { status: 400 });
   }
 
-  const userClient = createClient(url, publishableKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-    global: {
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-      },
-    },
-  });
   const adminClient = createClient(url, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
@@ -186,10 +177,13 @@ export async function POST(request: NextRequest) {
   const {
     data: { user },
     error: userError,
-  } = await userClient.auth.getUser(accessToken);
+  } = await adminClient.auth.getUser(accessToken);
 
   if (userError || !user) {
-    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    return NextResponse.json(
+      { error: "Your session could not be verified. Sign out and log in again." },
+      { status: 401 },
+    );
   }
 
   const { data: projectData, error: projectError } = await adminClient
