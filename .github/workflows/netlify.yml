@@ -110,9 +110,31 @@ jobs:
           require_env() {
             local key="$1"
             if [ -z "${!key:-}" ]; then
-              echo "::error title=Missing required GitHub secret::$key is empty. Add it under repository Settings > Secrets and variables > Actions."
+              echo "::error title=Missing required GitHub Actions config::$key is empty. Add it under repository Settings > Secrets and variables > Actions."
               missing=1
             fi
+          }
+
+          require_url() {
+            local key="$1"
+            local value="${!key:-}"
+            if [ -z "$value" ]; then
+              return
+            fi
+
+            node -e '
+              try {
+                const parsed = new URL(process.argv[1]);
+                if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) {
+                  process.exit(1);
+                }
+              } catch {
+                process.exit(1);
+              }
+            ' "$value" || {
+              echo "::error title=Invalid URL::$key must be a full HTTP or HTTPS URL."
+              missing=1
+            }
           }
 
           require_env NEXT_PUBLIC_SITE_URL
@@ -121,6 +143,8 @@ jobs:
           require_env SUPABASE_SERVICE_ROLE_KEY
           require_env RESEND_API_KEY
           require_env INVITE_FROM_EMAIL
+          require_url NEXT_PUBLIC_SITE_URL
+          require_url NEXT_PUBLIC_SUPABASE_URL
 
           exit "$missing"
 
