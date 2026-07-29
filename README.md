@@ -141,9 +141,7 @@ GitHub Actions expects these repository secrets:
 NETLIFY_AUTH_TOKEN=
 NETLIFY_SITE_ID=
 SUPABASE_SERVICE_ROLE_KEY=
-# Optional for branded project invite emails:
 RESEND_API_KEY=
-INVITE_FROM_EMAIL=
 ```
 
 GitHub Actions expects these repository variables:
@@ -152,11 +150,17 @@ GitHub Actions expects these repository variables:
 NEXT_PUBLIC_SITE_URL=https://your-netlify-site-or-domain.example
 NEXT_PUBLIC_SUPABASE_URL=https://kebqumcvfncgrypoilcw.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+INVITE_FROM_EMAIL=
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
+
+The `NEXT_PUBLIC_*` values are browser-visible by design, so keep them as
+GitHub variables and let the workflow sync them into Netlify as non-secret
+production environment variables. Keep `SUPABASE_SERVICE_ROLE_KEY` and
+`RESEND_API_KEY` as secrets.
 
 Netlify production also needs the server-only `SUPABASE_SERVICE_ROLE_KEY` for
 project invite creation and delivery. Add `RESEND_API_KEY` and

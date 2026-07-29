@@ -1,9 +1,14 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+function cleanEnv(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+const supabaseUrl = cleanEnv(process.env.NEXT_PUBLIC_SUPABASE_URL);
 const supabasePublishableKey =
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim() ??
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
+  cleanEnv(process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) ??
+  cleanEnv(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
 function isHttpUrl(value: string | undefined) {
   if (!value) {

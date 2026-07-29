@@ -85,7 +85,6 @@ NETLIFY_AUTH_TOKEN=
 NETLIFY_SITE_ID=
 SUPABASE_SERVICE_ROLE_KEY=
 RESEND_API_KEY=
-INVITE_FROM_EMAIL=
 ```
 
 Required GitHub repository variables:
@@ -94,11 +93,17 @@ Required GitHub repository variables:
 NEXT_PUBLIC_SITE_URL=https://your-netlify-site-or-domain.example
 NEXT_PUBLIC_SUPABASE_URL=https://kebqumcvfncgrypoilcw.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+INVITE_FROM_EMAIL=
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
+
+Keep browser-visible values such as `NEXT_PUBLIC_*` as GitHub variables, not
+secrets. The Netlify workflow removes any old secret copies of those public
+values and recreates them as regular production environment variables before
+deploying. Keep `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY` as secrets.
 
 ## Analytics Events
 
