@@ -56,6 +56,10 @@ type PlanTier = "free" | "pro";
 type ProjectKind = "personal" | "team";
 type ProjectRole = "owner" | "viewer";
 type ProjectInviteStatus = "pending" | "accepted";
+type ProjectInviteDelivery =
+  | "transactional_email"
+  | "supabase_invite"
+  | "manual_link";
 type ThemeMode = "light" | "dark";
 type TaskStatus = string;
 type Priority = "low" | "medium" | "high";
@@ -2164,7 +2168,12 @@ export default function Home() {
     });
     const payload = (await response
       .json()
-      .catch(() => null)) as { error?: string; invitation?: RemoteInviteRow } | null;
+      .catch(() => null)) as {
+      delivery?: ProjectInviteDelivery;
+      deliveryError?: string;
+      error?: string;
+      invitation?: RemoteInviteRow;
+    } | null;
 
     if (!response.ok) {
       throw new Error(payload?.error ?? "Project invite email could not be sent.");
@@ -2174,7 +2183,11 @@ export default function Home() {
       throw new Error("Project invite email could not be sent.");
     }
 
-    return mapRemoteInvite(payload.invitation);
+    return {
+      delivery: payload.delivery ?? "transactional_email",
+      deliveryError: payload.deliveryError,
+      invite: mapRemoteInvite(payload.invitation),
+    };
   }
 
   async function deliverLocalInviteEmail(email: string, projectName: string, token: string) {
@@ -2192,13 +2205,20 @@ export default function Home() {
     );
     const createdInvites: ProjectInvite[] = [];
     let draftCount = 0;
+    let manualLinkCount = 0;
+    let manualLinkReason = "";
     let sentCount = 0;
 
     for (const email of inviteEmails) {
       if (supabase && authUser && isUuid(project.id)) {
-        const invite = await sendRemoteProjectInvite(project, email);
-        createdInvites.push(invite);
-        sentCount += 1;
+        const result = await sendRemoteProjectInvite(project, email);
+        createdInvites.push(result.invite);
+        if (result.delivery === "manual_link") {
+          manualLinkCount += 1;
+          manualLinkReason ||= result.deliveryError ?? "";
+        } else {
+          sentCount += 1;
+        }
       } else {
         const invite: ProjectInvite = {
           id: createId("invite"),
@@ -2217,12 +2237,26 @@ export default function Home() {
       }
     }
 
-    if (sentCount || draftCount) {
-      setProjectNotice(
-        sentCount
-          ? `${sentCount} invite email${sentCount === 1 ? "" : "s"} sent.`
-          : `${draftCount} invite email draft${draftCount === 1 ? "" : "s"} opened.`,
-      );
+    if (sentCount || draftCount || manualLinkCount) {
+      const notices = [];
+      if (sentCount) {
+        notices.push(`${sentCount} invite email${sentCount === 1 ? "" : "s"} sent.`);
+      }
+      if (manualLinkCount) {
+        notices.push(
+          `${manualLinkCount} invite link${
+            manualLinkCount === 1 ? "" : "s"
+          } created; email delivery needs attention, so use the copy link button.${
+            manualLinkReason ? ` ${manualLinkReason}` : ""
+          }`,
+        );
+      }
+      if (draftCount) {
+        notices.push(
+          `${draftCount} invite email draft${draftCount === 1 ? "" : "s"} opened.`,
+        );
+      }
+      setProjectNotice(notices.join(" "));
     }
 
     return createdInvites;

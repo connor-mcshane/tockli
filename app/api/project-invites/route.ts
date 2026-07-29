@@ -20,6 +20,8 @@ type InviteRow = {
   accepted_at: string | null;
 };
 
+type InviteDelivery = "transactional_email" | "supabase_invite" | "manual_link";
+
 type ProjectRow = {
   id: string;
   kind: "personal" | "team";
@@ -78,6 +80,27 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
+function normalizeErrorMessage(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { message?: unknown; error?: unknown };
+    if (typeof parsed.message === "string") {
+      return parsed.message;
+    }
+    if (typeof parsed.error === "string") {
+      return parsed.error;
+    }
+  } catch {
+    // The upstream response was plain text.
+  }
+
+  return trimmed;
+}
+
 async function sendResendInviteEmail({
   email,
   inviteUrl,
@@ -125,7 +148,8 @@ async function sendResendInviteEmail({
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(
-      detail || `Resend rejected the invite email with status ${response.status}.`,
+      normalizeErrorMessage(detail) ||
+        `Resend rejected the invite email with status ${response.status}.`,
     );
   }
 
@@ -256,7 +280,6 @@ export async function POST(request: NextRequest) {
     .single();
 
   let invite = inviteData as InviteRow | null;
-  let createdInvite = Boolean(invite);
 
   if (insertError) {
     const { data: existingInvite, error: existingInviteError } = await adminClient
@@ -272,7 +295,6 @@ export async function POST(request: NextRequest) {
     }
 
     invite = existingInvite as InviteRow;
-    createdInvite = false;
   }
 
   if (!invite) {
@@ -310,28 +332,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const delivery: InviteDelivery = sentWithResend
+      ? "transactional_email"
+      : "supabase_invite";
+
     return NextResponse.json({
-      delivery: sentWithResend ? "transactional_email" : "supabase_invite",
+      delivery,
       invitation: invite,
     });
   } catch (error) {
-    if (createdInvite) {
-      await adminClient
-        .from("project_invitations")
-        .update({
-          revoked_at: new Date().toISOString(),
-          status: "revoked",
-        })
-        .eq("id", invite.id);
-    }
-
     const detail =
       error instanceof Error ? error.message : "Project invite email could not be sent.";
-    return NextResponse.json(
-      {
-        error: `${detail} Configure RESEND_API_KEY and INVITE_FROM_EMAIL for direct project invite emails to existing users.`,
-      },
-      { status: 502 },
-    );
+    return NextResponse.json({
+      delivery: "manual_link" satisfies InviteDelivery,
+      deliveryError: `${detail} Verify INVITE_FROM_EMAIL in Resend, or copy the invite link manually.`,
+      invitation: invite,
+    });
   }
 }
