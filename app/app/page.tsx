@@ -199,6 +199,7 @@ type UserSettings = {
   strictMode: boolean;
   soundEnabled: boolean;
   focusSound: FocusSound;
+  focusVolume: number;
   showNextUp: boolean;
   themeMode: ThemeMode;
 };
@@ -219,6 +220,7 @@ type StoredState = {
 const STORAGE_KEY = "tockli.mvp.v1";
 const LEGACY_STORAGE_KEY = "flowtimer.mvp.v1";
 const STORAGE_MIGRATION_KEY = "tockli.mvp.v1.user-scoped";
+const TIMER_SYNC_INTERVAL_MS = 500;
 const currentUser = {
   id: "current-user",
   name: "Connor McShane",
@@ -496,6 +498,7 @@ const initialSettings: UserSettings = {
   strictMode: false,
   soundEnabled: true,
   focusSound: "brown_noise",
+  focusVolume: 100,
   showNextUp: false,
   themeMode: "light",
 };
@@ -630,6 +633,10 @@ function formatTimer(seconds: number) {
   return `${minutes.toString().padStart(2, "0")}:${remainder
     .toString()
     .padStart(2, "0")}`;
+}
+
+function getRemainingTimerSeconds(deadline: number) {
+  return Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 }
 
 function formatHours(minutes: number) {
@@ -847,6 +854,14 @@ function normalizeThemeMode(themeMode?: string): ThemeMode {
   return themeMode === "dark" ? "dark" : "light";
 }
 
+function normalizeVolume(volume?: number) {
+  if (!Number.isFinite(volume)) {
+    return initialSettings.focusVolume;
+  }
+
+  return Math.min(100, Math.max(0, Math.round(volume ?? 0)));
+}
+
 function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
   const normalized = {
     ...initialSettings,
@@ -855,6 +870,7 @@ function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
 
   return {
     ...normalized,
+    focusVolume: normalizeVolume(settings?.focusVolume),
     themeMode: normalizeThemeMode(settings?.themeMode),
   };
 }
@@ -1066,6 +1082,8 @@ export default function Home() {
   const [remainingSeconds, setRemainingSeconds] = useState(
     initialSettings.focusMinutes * 60,
   );
+  const timerDeadlineRef = useRef<number | null>(null);
+  const timerCompletionHandledRef = useRef(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -1562,49 +1580,28 @@ export default function Home() {
     return projects.find((project) => project.id === projectId)?.currentUserRole !== "viewer";
   }
 
+  const beginPomodoroTimer = useCallback((durationMinutes: number) => {
+    const durationSeconds = durationMinutes * 60;
+    timerDeadlineRef.current = Date.now() + durationSeconds * 1000;
+    timerCompletionHandledRef.current = false;
+    setSessionDurationMinutes(durationMinutes);
+    setRemainingSeconds(durationSeconds);
+    setIsRunning(true);
+  }, []);
+
+  const clearPomodoroDeadline = useCallback(() => {
+    timerDeadlineRef.current = null;
+    timerCompletionHandledRef.current = false;
+  }, []);
+
   const activeGoal = settings.dailyPomodoroGoal;
   const todaysPomodoros = sessions.filter((session) =>
     isToday(session.completedAt),
   ).length;
   const progressPercent = Math.min(100, (todaysPomodoros / activeGoal) * 100);
 
-  const filteredSessions = useMemo(() => {
-    if (!selectedTags.length) {
-      return sessions.filter((session) => session.projectId === activeProjectId);
-    }
-
-    const filteredTaskIds = new Set(filteredProjectTasks.map((task) => task.id));
-    return sessions.filter(
-      (session) =>
-        session.projectId === activeProjectId &&
-        session.taskId !== null &&
-        filteredTaskIds.has(session.taskId),
-    );
-  }, [activeProjectId, filteredProjectTasks, selectedTags.length, sessions]);
-
-  const filteredCancellations = useMemo(() => {
-    if (!selectedTags.length) {
-      return cancellations.filter(
-        (cancellation) => cancellation.projectId === activeProjectId,
-      );
-    }
-
-    const filteredTaskIds = new Set(filteredProjectTasks.map((task) => task.id));
-    return cancellations.filter(
-      (cancellation) =>
-        cancellation.projectId === activeProjectId &&
-        cancellation.taskId !== null &&
-        filteredTaskIds.has(cancellation.taskId),
-    );
-  }, [
-    activeProjectId,
-    cancellations,
-    filteredProjectTasks,
-    selectedTags.length,
-  ]);
-
   const completeFocusSession = useCallback(
-    (minutes: number, note: string) => {
+    (minutes: number, note: string, completedAt = new Date().toISOString()) => {
       const completedTask = focusTask ?? null;
       const sessionProjectId = completedTask?.projectId ?? activeProjectId;
       const sessionProject = projects.find(
@@ -1615,7 +1612,7 @@ export default function Home() {
         projectId: sessionProjectId,
         taskId: completedTask?.id ?? null,
         minutes,
-        completedAt: new Date().toISOString(),
+        completedAt,
         note: note.trim() || "Focused session completed.",
       };
 
@@ -1645,6 +1642,7 @@ export default function Home() {
         );
       }
 
+      clearPomodoroDeadline();
       setSessionNote("");
       setIsRunning(false);
       setSessionDurationMinutes(settings.focusMinutes);
@@ -1653,7 +1651,13 @@ export default function Home() {
       setCancelStep("confirm");
       setCancelReason("");
     },
-    [activeProjectId, focusTask, projects, settings.focusMinutes],
+    [
+      activeProjectId,
+      clearPomodoroDeadline,
+      focusTask,
+      projects,
+      settings.focusMinutes,
+    ],
   );
 
   const playSuccessChime = useCallback(() => {
@@ -1705,27 +1709,57 @@ export default function Home() {
       return;
     }
 
-    const interval = window.setInterval(() => {
-      setRemainingSeconds((seconds) => {
-        if (seconds <= 1) {
-          window.clearInterval(interval);
-          playSuccessChime();
-          completeFocusSession(sessionDurationMinutes, sessionNote);
-          return settings.focusMinutes * 60;
-        }
+    if (timerDeadlineRef.current === null) {
+      timerDeadlineRef.current =
+        Date.now() + sessionDurationMinutes * 60 * 1000;
+      timerCompletionHandledRef.current = false;
+    }
 
-        return seconds - 1;
-      });
-    }, 1000);
+    function syncTimerWithClock() {
+      const deadline = timerDeadlineRef.current;
 
-    return () => window.clearInterval(interval);
+      if (deadline === null || timerCompletionHandledRef.current) {
+        return;
+      }
+
+      const nextRemainingSeconds = getRemainingTimerSeconds(deadline);
+      setRemainingSeconds(nextRemainingSeconds);
+
+      if (nextRemainingSeconds > 0) {
+        return;
+      }
+
+      timerCompletionHandledRef.current = true;
+      timerDeadlineRef.current = null;
+      playSuccessChime();
+      completeFocusSession(
+        sessionDurationMinutes,
+        sessionNote,
+        new Date(deadline).toISOString(),
+      );
+    }
+
+    syncTimerWithClock();
+    const interval = window.setInterval(
+      syncTimerWithClock,
+      TIMER_SYNC_INTERVAL_MS,
+    );
+    document.addEventListener("visibilitychange", syncTimerWithClock);
+    window.addEventListener("focus", syncTimerWithClock);
+    window.addEventListener("pageshow", syncTimerWithClock);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", syncTimerWithClock);
+      window.removeEventListener("focus", syncTimerWithClock);
+      window.removeEventListener("pageshow", syncTimerWithClock);
+    };
   }, [
     completeFocusSession,
     isRunning,
     playSuccessChime,
     sessionDurationMinutes,
     sessionNote,
-    settings.focusMinutes,
   ]);
 
   function addTask(status: TaskStatus) {
@@ -2597,9 +2631,7 @@ export default function Home() {
       180,
       Math.max(5, Math.round(requestedMinutes) || settings.focusMinutes),
     );
-    setSessionDurationMinutes(durationMinutes);
-    setRemainingSeconds(durationMinutes * 60);
-    setIsRunning(true);
+    beginPomodoroTimer(durationMinutes);
     trackEvent("timer_started", {
       focus_minutes: durationMinutes,
       has_task: true,
@@ -2612,9 +2644,7 @@ export default function Home() {
       return;
     }
 
-    setSessionDurationMinutes(settings.focusMinutes);
-    setRemainingSeconds(settings.focusMinutes * 60);
-    setIsRunning(true);
+    beginPomodoroTimer(settings.focusMinutes);
     trackEvent("timer_started", {
       focus_minutes: settings.focusMinutes,
       has_task: true,
@@ -2631,9 +2661,13 @@ export default function Home() {
 
     const task = focusTask ?? null;
     const projectId = task?.projectId ?? activeProjectId;
+    const syncedRemainingSeconds =
+      timerDeadlineRef.current === null
+        ? remainingSeconds
+        : getRemainingTimerSeconds(timerDeadlineRef.current);
     const elapsedSeconds = Math.max(
       0,
-      sessionDurationMinutes * 60 - remainingSeconds,
+      sessionDurationMinutes * 60 - syncedRemainingSeconds,
     );
     const cancellation: PomodoroCancellation = {
       id: createId("cancellation"),
@@ -2653,6 +2687,7 @@ export default function Home() {
       has_task: Boolean(task),
       reason,
     });
+    clearPomodoroDeadline();
     setIsRunning(false);
     setSessionNote("");
     setSessionDurationMinutes(settings.focusMinutes);
@@ -2680,7 +2715,7 @@ export default function Home() {
     audioNodeRef.current = null;
   }
 
-  function startFocusSound(sound: FocusSound) {
+  function startFocusSound(sound: FocusSound, volume: number) {
     if (audioNodeRef.current || typeof window === "undefined") {
       return;
     }
@@ -2708,7 +2743,7 @@ export default function Home() {
       rain: 0.018,
       thunderstorm: 0.04,
     };
-    gain.gain.value = soundGain[sound];
+    gain.gain.value = soundGain[sound] * (normalizeVolume(volume) / 100);
     gain.connect(context.destination);
 
     if (sound === "pulse") {
@@ -2827,7 +2862,7 @@ export default function Home() {
     }
 
     stopFocusSound();
-    startFocusSound(sound);
+    startFocusSound(sound, settings.focusVolume);
     audioPreviewTimeoutRef.current = window.setTimeout(() => {
       audioPreviewTimeoutRef.current = null;
       stopFocusSound();
@@ -2836,18 +2871,27 @@ export default function Home() {
 
   useEffect(() => {
     if (isRunning && settings.soundEnabled) {
-      startFocusSound(settings.focusSound);
+      startFocusSound(settings.focusSound, settings.focusVolume);
     } else {
       stopFocusSound();
     }
 
     return stopFocusSound;
-  }, [isRunning, settings.focusSound, settings.soundEnabled]);
+  }, [
+    isRunning,
+    settings.focusSound,
+    settings.focusVolume,
+    settings.soundEnabled,
+  ]);
 
-  const timerProgress =
-    ((sessionDurationMinutes * 60 - remainingSeconds) /
-      (sessionDurationMinutes * 60)) *
-    100;
+  const totalSessionSeconds = Math.max(1, sessionDurationMinutes * 60);
+  const timerProgress = Math.min(
+    100,
+    Math.max(
+      0,
+      ((totalSessionSeconds - remainingSeconds) / totalSessionSeconds) * 100,
+    ),
+  );
   const isDarkTheme = settings.themeMode === "dark";
 
   async function signOut() {
@@ -3263,14 +3307,11 @@ export default function Home() {
 
             {view === "analytics" ? (
               <AnalyticsView
-                allTags={allProjectTags}
-                cancellations={filteredCancellations}
-                categories={activeProjectCategories}
-                onToggleTag={toggleTag}
-                projectName={activeProject?.name ?? "Current project"}
-                projectTasks={filteredProjectTasks}
-                selectedTags={selectedTags}
-                sessions={filteredSessions}
+                cancellations={cancellations}
+                categories={categories}
+                projects={projects}
+                sessions={sessions}
+                tasks={tasks}
               />
             ) : null}
 
@@ -5957,29 +5998,30 @@ function MarkdownPreview({ note }: { note: string }) {
 }
 
 function AnalyticsView({
-  allTags,
   cancellations,
   categories,
-  onToggleTag,
-  projectName,
-  projectTasks,
-  selectedTags,
+  projects,
   sessions,
+  tasks,
 }: {
-  allTags: string[];
   cancellations: PomodoroCancellation[];
   categories: TaskCategory[];
-  onToggleTag: (tag: string) => void;
-  projectName: string;
-  projectTasks: Task[];
-  selectedTags: string[];
+  projects: Project[];
   sessions: FocusSession[];
+  tasks: Task[];
 }) {
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
+  const [projectFilterId, setProjectFilterId] = useState<"all" | string>("all");
+  const [selectedAnalyticsTags, setSelectedAnalyticsTags] = useState<string[]>([]);
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const rangeStart = new Date(today);
   rangeStart.setDate(rangeStart.getDate() - (rangeDays - 1));
+  const effectiveProjectFilterId =
+    projectFilterId === "all" ||
+    projects.some((project) => project.id === projectFilterId)
+      ? projectFilterId
+      : "all";
 
   function dateKey(value: string | Date) {
     const date = typeof value === "string" ? new Date(value) : value;
@@ -5990,14 +6032,70 @@ function AnalyticsView({
     ].join("-");
   }
 
-  const rangeSessions = sessions
+  const selectedProject =
+    effectiveProjectFilterId === "all"
+      ? null
+      : projects.find((project) => project.id === effectiveProjectFilterId) ?? null;
+  const scopedTasks =
+    effectiveProjectFilterId === "all"
+      ? tasks
+      : tasks.filter((task) => task.projectId === effectiveProjectFilterId);
+  const scopedCategories =
+    effectiveProjectFilterId === "all"
+      ? categories
+      : categories.filter(
+          (category) => category.projectId === effectiveProjectFilterId,
+        );
+  const scopedTags = Array.from(
+    new Set(scopedTasks.flatMap((task) => task.tags.map(normalizeTag))),
+  )
+    .filter(Boolean)
+    .sort();
+  const activeAnalyticsTags = selectedAnalyticsTags.filter((tag) =>
+    scopedTags.includes(tag),
+  );
+  const visibleTasks = activeAnalyticsTags.length
+    ? scopedTasks.filter((task) =>
+        activeAnalyticsTags.some((tag) =>
+          task.tags.map(normalizeTag).includes(tag),
+        ),
+      )
+    : scopedTasks;
+  const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
+  const scopedSessions =
+    effectiveProjectFilterId === "all"
+      ? sessions
+      : sessions.filter((session) => session.projectId === effectiveProjectFilterId);
+  const scopedCancellations =
+    effectiveProjectFilterId === "all"
+      ? cancellations
+      : cancellations.filter(
+          (cancellation) => cancellation.projectId === effectiveProjectFilterId,
+        );
+  const analyticsSessions = activeAnalyticsTags.length
+    ? scopedSessions.filter(
+        (session) =>
+          session.taskId !== null && visibleTaskIds.has(session.taskId),
+      )
+    : scopedSessions;
+  const analyticsCancellations = activeAnalyticsTags.length
+    ? scopedCancellations.filter(
+        (cancellation) =>
+          cancellation.taskId !== null &&
+          visibleTaskIds.has(cancellation.taskId),
+      )
+    : scopedCancellations;
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const analyticsScopeLabel = selectedProject?.name ?? "All projects";
+
+  const rangeSessions = analyticsSessions
     .filter((session) => new Date(session.completedAt) >= rangeStart)
     .sort(
       (left, right) =>
         new Date(right.completedAt).getTime() -
         new Date(left.completedAt).getTime(),
     );
-  const rangeCancellations = cancellations.filter(
+  const rangeCancellations = analyticsCancellations.filter(
     (cancellation) => new Date(cancellation.cancelledAt) >= rangeStart,
   );
   const rangeMinutes = rangeSessions.reduce(
@@ -6005,18 +6103,20 @@ function AnalyticsView({
     0,
   );
   const dailyAverage = rangeSessions.length / rangeDays;
-  const completedCount = projectTasks.filter(
+  const completedCount = visibleTasks.filter(
     (task) => task.status === "done",
   ).length;
-  const completionRate = projectTasks.length
-    ? Math.round((completedCount / projectTasks.length) * 100)
+  const completionRate = visibleTasks.length
+    ? Math.round((completedCount / visibleTasks.length) * 100)
     : 0;
   const totalAttempts = rangeSessions.length + rangeCancellations.length;
   const flowScore = totalAttempts
     ? ((rangeSessions.length / totalAttempts) * 10).toFixed(1)
     : "0.0";
 
-  const activityDays = new Set(sessions.map((session) => dateKey(session.completedAt)));
+  const activityDays = new Set(
+    analyticsSessions.map((session) => dateKey(session.completedAt)),
+  );
   const streakCursor = new Date(today);
   if (!activityDays.has(dateKey(streakCursor))) {
     streakCursor.setDate(streakCursor.getDate() - 1);
@@ -6028,7 +6128,7 @@ function AnalyticsView({
   }
 
   const sessionMinutesByDay = new Map<string, number>();
-  sessions.forEach((session) => {
+  analyticsSessions.forEach((session) => {
     const key = dateKey(session.completedAt);
     sessionMinutesByDay.set(
       key,
@@ -6052,9 +6152,9 @@ function AnalyticsView({
     day.minutes > peak.minutes ? day : peak,
   );
 
-  const taskById = new Map(projectTasks.map((task) => [task.id, task]));
+  const taskById = new Map(visibleTasks.map((task) => [task.id, task]));
   const categoryById = new Map(
-    categories.map((category) => [category.id, category]),
+    scopedCategories.map((category) => [category.id, category]),
   );
   const categoryTotals = new Map<
     string,
@@ -6134,42 +6234,61 @@ function AnalyticsView({
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase text-[var(--danger)]">
-            {projectName}
+            {analyticsScopeLabel}
           </p>
           <h2 className="mt-1 text-3xl font-bold">Focus insights</h2>
           <p className="mt-2 text-sm text-[var(--muted)]">{rangeLabel}</p>
         </div>
-        <div
-          aria-label="Analytics date range"
-          className="flex w-fit rounded-md border border-[var(--border)] bg-[var(--surface)] p-1"
-          role="group"
-        >
-          {([7, 30, 90] as const).map((days) => (
-            <button
-              key={days}
-              aria-pressed={rangeDays === days}
-              className={`h-8 rounded px-3 text-xs font-semibold transition ${
-                rangeDays === days
-                  ? "bg-[var(--foreground)] text-[var(--background)]"
-                  : "text-[var(--muted)] hover:bg-[var(--surface-hover)]"
-              }`}
-              type="button"
-              onClick={() => setRangeDays(days)}
+        <div className="flex flex-col gap-2 sm:items-end">
+          <label className="flex h-10 w-full items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--muted)] sm:w-auto">
+            <FolderKanban size={16} aria-hidden="true" />
+            <span className="sr-only">Analytics project</span>
+            <select
+              aria-label="Analytics project"
+              className="min-w-0 bg-transparent font-semibold text-[var(--foreground)] outline-none"
+              value={effectiveProjectFilterId}
+              onChange={(event) => setProjectFilterId(event.target.value)}
             >
-              {days} days
-            </button>
-          ))}
+              <option value="all">All projects</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div
+            aria-label="Analytics date range"
+            className="flex w-fit rounded-md border border-[var(--border)] bg-[var(--surface)] p-1"
+            role="group"
+          >
+            {([7, 30, 90] as const).map((days) => (
+              <button
+                key={days}
+                aria-pressed={rangeDays === days}
+                className={`h-8 rounded px-3 text-xs font-semibold transition ${
+                  rangeDays === days
+                    ? "bg-[var(--foreground)] text-[var(--background)]"
+                    : "text-[var(--muted)] hover:bg-[var(--surface-hover)]"
+                }`}
+                type="button"
+                onClick={() => setRangeDays(days)}
+              >
+                {days} days
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
-      {allTags.length ? (
+      {scopedTags.length ? (
         <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
           <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[var(--muted)]">
             <Hash size={16} aria-hidden="true" />
             Analytics filter
           </div>
-          {allTags.map((tag) => {
-            const active = selectedTags.includes(tag);
+          {scopedTags.map((tag) => {
+            const active = activeAnalyticsTags.includes(tag);
 
             return (
               <button
@@ -6180,7 +6299,13 @@ function AnalyticsView({
                     : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
                 }`}
                 type="button"
-                onClick={() => onToggleTag(tag)}
+                onClick={() =>
+                  setSelectedAnalyticsTags((current) =>
+                    current.includes(tag)
+                      ? current.filter((item) => item !== tag)
+                      : [...current, tag],
+                  )
+                }
               >
                 #{tag}
               </button>
@@ -6427,7 +6552,11 @@ function AnalyticsView({
             rangeSessions.slice(0, 6).map((session) => (
               <div
                 key={session.id}
-                className="grid gap-2 py-3 text-sm sm:grid-cols-[120px_1fr_90px]"
+                className={`grid gap-2 py-3 text-sm ${
+                  effectiveProjectFilterId === "all"
+                    ? "sm:grid-cols-[110px_140px_minmax(0,1fr)_80px]"
+                    : "sm:grid-cols-[120px_1fr_90px]"
+                }`}
               >
                 <span className="text-[var(--muted)]">
                   {new Date(session.completedAt).toLocaleDateString("en", {
@@ -6435,6 +6564,11 @@ function AnalyticsView({
                     day: "numeric",
                   })}
                 </span>
+                {effectiveProjectFilterId === "all" ? (
+                  <span className="min-w-0 truncate text-[var(--muted)]">
+                    {projectById.get(session.projectId)?.name ?? "Unknown project"}
+                  </span>
+                ) : null}
                 <span className="min-w-0 truncate">
                   {session.taskId
                     ? taskById.get(session.taskId)?.title ?? session.note
@@ -6653,6 +6787,37 @@ function SettingsView({
                 {focusSoundDescriptions[settings.focusSound]} Sound stays in your browser and only plays while a Pomodoro is running.
               </p>
             </div>
+
+            <label className="block">
+              <span className="flex items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-[var(--muted)]">
+                  Volume
+                </span>
+                <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-[var(--muted)] tabular-nums">
+                  {settings.focusVolume === 0 ? (
+                    <VolumeX size={14} aria-hidden="true" />
+                  ) : (
+                    <Volume2 size={14} aria-hidden="true" />
+                  )}
+                  {settings.focusVolume}%
+                </span>
+              </span>
+              <input
+                aria-label="Focus sound volume"
+                className="mt-3 h-2 w-full cursor-pointer accent-[var(--accent)]"
+                max={100}
+                min={0}
+                step={5}
+                type="range"
+                value={settings.focusVolume}
+                onChange={(event) =>
+                  setSettings({
+                    ...settings,
+                    focusVolume: normalizeVolume(Number(event.target.value)),
+                  })
+                }
+              />
+            </label>
 
             <ToggleField
               checked={settings.showNextUp}

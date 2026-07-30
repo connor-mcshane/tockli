@@ -5,11 +5,13 @@ import {
   CheckCircle2,
   Save,
   Settings,
+  ShieldCheck,
   TimerReset,
   User,
 } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
 import { trackEvent } from "@/lib/analytics";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
@@ -20,12 +22,37 @@ type Profile = {
   plan: string;
 };
 
+type FormStatus = "idle" | "saving" | "success" | "error";
+
 export default function AccountClient() {
   const [loading, setLoading] = useState(true);
+  const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [displayName, setDisplayName] = useState("");
-  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [status, setStatus] = useState<FormStatus>("idle");
   const [message, setMessage] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordStatus, setPasswordStatus] = useState<FormStatus>("idle");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const authProviderNames = authUser
+    ? Array.from(
+        new Set(
+          [
+            ...(Array.isArray(authUser.app_metadata.providers)
+              ? authUser.app_metadata.providers
+              : []),
+            typeof authUser.app_metadata.provider === "string"
+              ? authUser.app_metadata.provider
+              : "",
+          ].filter((provider): provider is string => Boolean(provider)),
+        ),
+      )
+    : [];
+  const hasPasswordProvider = authProviderNames.includes("email");
+  const passwordActionLabel = hasPasswordProvider
+    ? "Change password"
+    : "Set password";
 
   useEffect(() => {
     let alive = true;
@@ -45,6 +72,10 @@ export default function AccountClient() {
           window.location.assign("/login?next=/account");
         }
         return;
+      }
+
+      if (alive) {
+        setAuthUser(session.user);
       }
 
       const { data } = await supabase
@@ -100,6 +131,67 @@ export default function AccountClient() {
         setMessage("");
       }, 3000);
     }
+  }
+
+  async function handlePasswordSave(e: FormEvent) {
+    e.preventDefault();
+
+    if (!isSupabaseConfigured || !supabase) {
+      setPasswordStatus("error");
+      setPasswordMessage("Supabase auth is not configured for this deployment yet.");
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      setPasswordStatus("error");
+      setPasswordMessage("Use at least 8 characters for your password.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordStatus("error");
+      setPasswordMessage("The passwords do not match.");
+      return;
+    }
+
+    setPasswordStatus("saving");
+    setPasswordMessage("");
+
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+
+    if (error) {
+      setPasswordStatus("error");
+      setPasswordMessage(error.message);
+      return;
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (user) {
+      setAuthUser(user);
+    }
+
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordStatus("success");
+    setPasswordMessage(
+      hasPasswordProvider
+        ? "Password changed successfully."
+        : "Password set successfully.",
+    );
+    trackEvent("settings_updated", {
+      field: "password",
+      surface: "account_page",
+    });
+
+    setTimeout(() => {
+      setPasswordStatus("idle");
+      setPasswordMessage("");
+    }, 3000);
   }
 
   if (loading) {
@@ -231,6 +323,96 @@ export default function AccountClient() {
                   >
                     <Save size={16} />
                     {status === "saving" ? "Saving..." : "Save Changes"}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section className="rounded-xl border border-[#e8e8e6] bg-white p-6 shadow-sm">
+              <div className="mb-6 flex items-center gap-3 border-b border-[#e8e8e6] pb-4">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#f7f7f5] text-[#1a1c1b]">
+                  <ShieldCheck size={20} />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold">Password Security</h2>
+                  <p className="text-sm text-[#62605b]">
+                    {hasPasswordProvider
+                      ? "Change the password used for email login."
+                      : "Set a password so you can also log in with email."}
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handlePasswordSave} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="newPassword"
+                    className="mb-1 block text-sm font-semibold text-[#1a1c1b]"
+                  >
+                    New Password
+                  </label>
+                  <input
+                    id="newPassword"
+                    autoComplete="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    disabled={!isSupabaseConfigured || passwordStatus === "saving"}
+                    className="w-full rounded-md border border-[#e8e8e6] bg-white px-3 py-2 text-sm text-[#1a1c1b] outline-none transition focus:border-[#ff005e] disabled:cursor-not-allowed disabled:opacity-60"
+                    required
+                  />
+                  <p className="mt-1 text-xs text-[#62605b]">
+                    Use at least 8 characters.
+                  </p>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="confirmPassword"
+                    className="mb-1 block text-sm font-semibold text-[#1a1c1b]"
+                  >
+                    Confirm Password
+                  </label>
+                  <input
+                    id="confirmPassword"
+                    autoComplete="new-password"
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    disabled={!isSupabaseConfigured || passwordStatus === "saving"}
+                    className="w-full rounded-md border border-[#e8e8e6] bg-white px-3 py-2 text-sm text-[#1a1c1b] outline-none transition focus:border-[#ff005e] disabled:cursor-not-allowed disabled:opacity-60"
+                    required
+                  />
+                </div>
+
+                {passwordMessage ? (
+                  <div
+                    className={`flex items-center gap-2 rounded-md p-3 text-sm font-semibold ${
+                      passwordStatus === "error"
+                        ? "bg-red-50 text-red-600"
+                        : "bg-[#25a565]/10 text-[#25a565]"
+                    }`}
+                  >
+                    {passwordStatus === "success" && <CheckCircle2 size={16} />}
+                    {passwordMessage}
+                  </div>
+                ) : null}
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={
+                      !isSupabaseConfigured ||
+                      passwordStatus === "saving" ||
+                      !newPassword ||
+                      !confirmPassword
+                    }
+                    className="flex h-10 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054] disabled:opacity-50"
+                  >
+                    <Save size={16} />
+                    {passwordStatus === "saving"
+                      ? "Saving..."
+                      : passwordActionLabel}
                   </button>
                 </div>
               </form>
