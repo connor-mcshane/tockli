@@ -8,12 +8,16 @@ const uuidPattern =
 type InviteRequestBody = {
   email?: unknown;
   projectId?: unknown;
+  role?: unknown;
 };
+
+type InviteRole = "editor" | "viewer";
 
 type InviteRow = {
   id: string;
   project_id: string;
   invited_email: string;
+  role: InviteRole;
   token: string;
   status: "pending" | "accepted" | "revoked";
   created_at: string;
@@ -31,6 +35,16 @@ type ProjectRow = {
 
 function normalizeEmail(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeInviteRole(value: unknown): InviteRole {
+  return value === "viewer" ? "viewer" : "editor";
+}
+
+function getInviteAccessText(role: InviteRole) {
+  return role === "editor"
+    ? "You will join with editor access."
+    : "You will join with read-only access.";
 }
 
 function getBearerToken(request: NextRequest) {
@@ -105,10 +119,12 @@ async function sendResendInviteEmail({
   email,
   inviteUrl,
   projectName,
+  role,
 }: {
   email: string;
   inviteUrl: string;
   projectName: string;
+  role: InviteRole;
 }) {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.INVITE_FROM_EMAIL;
@@ -119,19 +135,20 @@ async function sendResendInviteEmail({
 
   const escapedProjectName = escapeHtml(projectName);
   const escapedInviteUrl = escapeHtml(inviteUrl);
+  const escapedAccessText = escapeHtml(getInviteAccessText(role));
   const response = await fetch("https://api.resend.com/emails", {
     body: JSON.stringify({
       from,
       html: [
         `<p>You have been invited to join <strong>${escapedProjectName}</strong> on Tockli.</p>`,
-        "<p>You will join as a read-only project member.</p>",
+        `<p>${escapedAccessText}</p>`,
         `<p><a href="${escapedInviteUrl}">Accept the project invite</a></p>`,
         `<p>If the button does not work, paste this link into your browser:<br>${escapedInviteUrl}</p>`,
       ].join(""),
       subject: `Join ${projectName} on Tockli`,
       text: [
         `You have been invited to join ${projectName} on Tockli.`,
-        "You will join as a read-only project member.",
+        getInviteAccessText(role),
         "",
         "Accept the project invite:",
         inviteUrl,
@@ -182,6 +199,7 @@ export async function POST(request: NextRequest) {
 
   const email = normalizeEmail(body.email);
   const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "";
+  const role = normalizeInviteRole(body.role);
 
   if (!emailPattern.test(email)) {
     return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
@@ -274,9 +292,9 @@ export async function POST(request: NextRequest) {
       invited_by: user.id,
       invited_email: email,
       project_id: project.id,
-      role: "viewer",
+      role,
     })
-    .select("id,project_id,invited_email,token,status,created_at,accepted_at")
+    .select("id,project_id,invited_email,role,token,status,created_at,accepted_at")
     .single();
 
   let invite = inviteData as InviteRow | null;
@@ -284,7 +302,7 @@ export async function POST(request: NextRequest) {
   if (insertError) {
     const { data: existingInvite, error: existingInviteError } = await adminClient
       .from("project_invitations")
-      .select("id,project_id,invited_email,token,status,created_at,accepted_at")
+      .select("id,project_id,invited_email,role,token,status,created_at,accepted_at")
       .eq("project_id", project.id)
       .eq("invited_email", email)
       .eq("status", "pending")
@@ -313,6 +331,7 @@ export async function POST(request: NextRequest) {
       email,
       inviteUrl,
       projectName: project.name,
+      role: invite.role,
     });
 
     if (!sentWithResend) {
@@ -321,6 +340,7 @@ export async function POST(request: NextRequest) {
         {
           data: {
             invite_project: project.name,
+            invite_role: invite.role,
             project_invite_token: invite.token,
           },
           redirectTo,

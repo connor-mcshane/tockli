@@ -80,7 +80,7 @@ create table public.project_invitations (
     and length(invited_email) between 3 and 254
     and invited_email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'
   ),
-  role public.project_role not null default 'viewer' check (role = 'viewer'),
+  role public.project_role not null default 'editor' check (role in ('editor', 'viewer')),
   token text not null default encode(gen_random_bytes(32), 'hex') unique,
   invited_by uuid not null references public.profiles(id) on delete cascade,
   accepted_by uuid references public.profiles(id) on delete set null,
@@ -336,8 +336,12 @@ begin
     return new;
   end if;
 
-  if new.role <> 'viewer' then
-    raise exception 'Project collaborators are read-only users';
+  if new.role = 'owner' then
+    raise exception 'Only the project owner can be the project admin';
+  end if;
+
+  if new.role not in ('editor', 'viewer') then
+    raise exception 'Project collaborators must be editors or read-only users';
   end if;
 
   return new;
@@ -516,30 +520,30 @@ create policy "Members read categories"
 on public.task_categories for select
 using (public.is_project_member(project_id));
 
-create policy "Owners manage categories"
+create policy "Editors manage categories"
 on public.task_categories for all
-using (public.current_user_project_role(project_id) = 'owner')
-with check (public.current_user_project_role(project_id) = 'owner');
+using (public.current_user_project_role(project_id) in ('owner', 'editor'))
+with check (public.current_user_project_role(project_id) in ('owner', 'editor'));
 
 create policy "Members read tasks"
 on public.tasks for select
 using (public.is_project_member(project_id));
 
-create policy "Owners create tasks"
+create policy "Editors create tasks"
 on public.tasks for insert
 with check (
   created_by = auth.uid()
-  and public.current_user_project_role(project_id) = 'owner'
+  and public.current_user_project_role(project_id) in ('owner', 'editor')
 );
 
-create policy "Owners update tasks"
+create policy "Editors update tasks"
 on public.tasks for update
-using (public.current_user_project_role(project_id) = 'owner')
-with check (public.current_user_project_role(project_id) = 'owner');
+using (public.current_user_project_role(project_id) in ('owner', 'editor'))
+with check (public.current_user_project_role(project_id) in ('owner', 'editor'));
 
-create policy "Owners delete tasks"
+create policy "Editors delete tasks"
 on public.tasks for delete
-using (public.current_user_project_role(project_id) = 'owner');
+using (public.current_user_project_role(project_id) in ('owner', 'editor'));
 
 create policy "Members read tags"
 on public.task_tags for select
@@ -551,20 +555,20 @@ using (
   )
 );
 
-create policy "Owners manage tags"
+create policy "Editors manage tags"
 on public.task_tags for all
 using (
   exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 )
 with check (
   exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 );
 
@@ -578,20 +582,20 @@ using (
   )
 );
 
-create policy "Owners manage subtasks"
+create policy "Editors manage subtasks"
 on public.task_subtasks for all
 using (
   exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 )
 with check (
   exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 );
 
@@ -605,25 +609,25 @@ using (
   )
 );
 
-create policy "Owners create task comments"
+create policy "Editors create task comments"
 on public.task_comments for insert
 with check (
   author_id = auth.uid()
   and exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 );
 
-create policy "Owners update own task comments"
+create policy "Editors update own task comments"
 on public.task_comments for update
 using (
   author_id = auth.uid()
   and exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 )
 with check (
@@ -631,18 +635,18 @@ with check (
   and exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 );
 
-create policy "Owners delete own task comments"
+create policy "Editors delete own task comments"
 on public.task_comments for delete
 using (
   author_id = auth.uid()
   and exists (
     select 1 from public.tasks t
     where t.id = task_id
-      and public.current_user_project_role(t.project_id) = 'owner'
+      and public.current_user_project_role(t.project_id) in ('owner', 'editor')
   )
 );
 
@@ -652,7 +656,7 @@ using (public.current_user_project_role(project_id) = 'owner')
 with check (
   public.current_user_project_role(project_id) = 'owner'
   and invited_by = auth.uid()
-  and role = 'viewer'
+  and role in ('editor', 'viewer')
 );
 
 create policy "Invitees read own pending invitations"

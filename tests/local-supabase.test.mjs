@@ -9,7 +9,9 @@ const DATABASE_URL =
 const ownerId = "00000000-0000-4000-8000-00000000a001";
 const collaboratorId = "00000000-0000-4000-8000-00000000a002";
 const outsiderId = "00000000-0000-4000-8000-00000000a003";
+const editorId = "00000000-0000-4000-8000-00000000a004";
 const marketingEmail = "early-access@tockli.test";
+const testUserIds = [ownerId, collaboratorId, outsiderId, editorId];
 
 const sql = postgres(DATABASE_URL, {
   idle_timeout: 1,
@@ -34,19 +36,19 @@ async function requireLocalDatabase() {
 async function resetTestData() {
   await sql.begin(async (tx) => {
     await tx`delete from public.marketing_signups where lower(email) = lower(${marketingEmail})`;
-    await tx`delete from public.pomodoro_cancellations where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.focus_sessions where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.task_comments where author_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.task_subtasks where task_id in (select id from public.tasks where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
-    await tx`delete from public.task_tags where task_id in (select id from public.tasks where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
-    await tx`delete from public.tasks where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.task_categories where created_by in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.project_invitations where invited_by in (${ownerId}, ${collaboratorId}, ${outsiderId}) or accepted_by in (${ownerId}, ${collaboratorId}, ${outsiderId}) or project_id in (select id from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
-    await tx`delete from public.project_members where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId}) or project_id in (select id from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId}))`;
-    await tx`delete from public.projects where owner_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.user_settings where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from public.profiles where id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
-    await tx`delete from auth.users where id in (${ownerId}, ${collaboratorId}, ${outsiderId})`;
+    await tx`delete from public.pomodoro_cancellations where user_id in ${tx(testUserIds)}`;
+    await tx`delete from public.focus_sessions where user_id in ${tx(testUserIds)}`;
+    await tx`delete from public.task_comments where author_id in ${tx(testUserIds)}`;
+    await tx`delete from public.task_subtasks where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
+    await tx`delete from public.task_tags where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
+    await tx`delete from public.tasks where created_by in ${tx(testUserIds)}`;
+    await tx`delete from public.task_categories where created_by in ${tx(testUserIds)}`;
+    await tx`delete from public.project_invitations where invited_by in ${tx(testUserIds)} or accepted_by in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
+    await tx`delete from public.project_members where user_id in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
+    await tx`delete from public.projects where owner_id in ${tx(testUserIds)}`;
+    await tx`delete from public.user_settings where user_id in ${tx(testUserIds)}`;
+    await tx`delete from public.profiles where id in ${tx(testUserIds)}`;
+    await tx`delete from auth.users where id in ${tx(testUserIds)}`;
   });
 }
 
@@ -150,25 +152,26 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
       "Collaborator User",
     );
     await insertAuthUser(tx, outsiderId, "outsider@tockli.test", "Outsider User");
+    await insertAuthUser(tx, editorId, "editor@tockli.test", "Editor User");
   });
 
   const bootstrappedProfiles = await sql`
     select email, display_name
     from public.profiles
-    where id in (${ownerId}, ${collaboratorId}, ${outsiderId})
+    where id in ${sql(testUserIds)}
     order by email
   `;
   assert.deepEqual(
     bootstrappedProfiles.map((profile) => profile.display_name),
-    ["Collaborator User", "Outsider User", "Owner User"],
+    ["Collaborator User", "Editor User", "Outsider User", "Owner User"],
   );
 
   const bootstrappedSettings = await sql`
     select user_id, sound_enabled
     from public.user_settings
-    where user_id in (${ownerId}, ${collaboratorId}, ${outsiderId})
+    where user_id in ${sql(testUserIds)}
   `;
-  assert.equal(bootstrappedSettings.length, 3);
+  assert.equal(bootstrappedSettings.length, 4);
   assert.ok(
     bootstrappedSettings.every((settings) => settings.sound_enabled === true),
   );
@@ -259,12 +262,21 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   `;
   assert.ok(secondTeamProject.id);
 
+  const [editorMembership] = await sql`
+    insert into public.project_members (project_id, user_id, role)
+    values (${teamProject.id}, ${editorId}, 'editor')
+    returning role
+  `;
+  assert.equal(editorMembership.role, "editor");
+
   await assert.rejects(
     sql`
-      insert into public.project_members (project_id, user_id, role)
-      values (${teamProject.id}, ${collaboratorId}, 'editor')
+      update public.project_members
+      set role = 'owner'
+      where project_id = ${teamProject.id}
+        and user_id = ${editorId}
     `,
-    /Project collaborators are read-only users/,
+    /Only the project owner can be the project admin/,
   );
 
   const [invite] = await withAuthenticatedUser(ownerId, async (tx) =>
@@ -272,12 +284,14 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
       insert into public.project_invitations (
         project_id,
         invited_email,
-        invited_by
+        invited_by,
+        role
       )
       values (
         ${teamProject.id},
         'collaborator@tockli.test',
-        ${ownerId}
+        ${ownerId},
+        'viewer'
       )
       returning token, role, status
     `,
@@ -375,13 +389,26 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   );
   assert.equal(movedTask.status, "waiting");
 
+  const [editorUpdatedTask] = await withAuthenticatedUser(editorId, async (tx) =>
+    tx`
+      update public.tasks
+      set
+        status = 'active',
+        title = 'Editor refined shared checklist'
+      where id = ${task.id}
+      returning status, title
+    `,
+  );
+  assert.equal(editorUpdatedTask.status, "active");
+  assert.equal(editorUpdatedTask.title, "Editor refined shared checklist");
+
   const viewerTaskUpdates = await withAuthenticatedUser(collaboratorId, async (tx) =>
     tx`
-        update public.tasks
-        set title = 'Viewer should not edit this'
-        where id = ${task.id}
-        returning id
-      `,
+      update public.tasks
+      set title = 'Viewer should not edit this'
+      where id = ${task.id}
+      returning id
+    `,
   );
   assert.equal(viewerTaskUpdates.length, 0);
 
@@ -418,6 +445,20 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
     `;
 
     assert.equal(comment.body, "Owner comment on the shared task.");
+  });
+
+  await withAuthenticatedUser(editorId, async (tx) => {
+    const [comment] = await tx`
+      insert into public.task_comments (task_id, author_id, body)
+      values (
+        ${task.id},
+        ${editorId},
+        'Editor comment on the shared task.'
+      )
+      returning id, body
+    `;
+
+    assert.equal(comment.body, "Editor comment on the shared task.");
   });
 
   await assert.rejects(
@@ -468,7 +509,7 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
         order by created_at
       `,
   );
-  assert.equal(collaboratorVisibleComments.length, 1);
+  assert.equal(collaboratorVisibleComments.length, 2);
 
   const collaboratorVisibleProfiles = await withAuthenticatedUser(
     collaboratorId,

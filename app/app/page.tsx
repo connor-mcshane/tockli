@@ -48,13 +48,15 @@ import {
 import type { User } from "@supabase/supabase-js";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { trackEvent } from "@/lib/analytics";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type View = "board" | "timer" | "analytics" | "settings";
 type PlanTier = "free" | "pro";
 type ProjectKind = "personal" | "team";
-type ProjectRole = "owner" | "viewer";
+type ProjectRole = "owner" | "editor" | "viewer";
+type ProjectMemberAccessRole = Exclude<ProjectRole, "owner">;
 type ProjectInviteStatus = "pending" | "accepted";
 type ProjectInviteDelivery =
   | "transactional_email"
@@ -104,6 +106,7 @@ type ProjectInvite = {
   id: string;
   email: string;
   token: string;
+  role: ProjectMemberAccessRole;
   status: ProjectInviteStatus;
   invitedAt: string;
   acceptedAt?: string;
@@ -122,7 +125,9 @@ type ProjectDialogValues = {
   description: string;
   kind: ProjectKind;
   color: string;
+  inviteRole: ProjectMemberAccessRole;
   inviteEmails: string[];
+  memberRoles: Record<string, ProjectMemberAccessRole>;
   retainedMemberIds: string[];
   retainedInviteIds: string[];
 };
@@ -173,6 +178,7 @@ type Task = {
 
 type FocusSession = {
   id: string;
+  userId?: string;
   projectId: string;
   taskId: string | null;
   minutes: number;
@@ -182,6 +188,7 @@ type FocusSession = {
 
 type PomodoroCancellation = {
   id: string;
+  userId?: string;
   projectId: string;
   taskId: string | null;
   durationMinutes: number;
@@ -555,8 +562,10 @@ const planLabels: Record<PlanTier, string> = {
 
 const projectRoleLabels: Record<ProjectRole, string> = {
   owner: "Admin",
-  viewer: "User",
+  editor: "Editor",
+  viewer: "Read-only",
 };
+const memberAccessOptions: ProjectMemberAccessRole[] = ["editor", "viewer"];
 
 function createDefaultBoardColumns(): BoardColumn[] {
   return [
@@ -734,7 +743,17 @@ function createCurrentUserMember(
 }
 
 function normalizeProjectRole(role?: string | null): ProjectRole {
-  return role === "owner" ? "owner" : "viewer";
+  if (role === "owner" || role === "editor") {
+    return role;
+  }
+
+  return "viewer";
+}
+
+function normalizeMemberAccessRole(
+  role?: string | null,
+): ProjectMemberAccessRole {
+  return normalizeProjectRole(role) === "viewer" ? "viewer" : "editor";
 }
 
 function normalizeStoredProjectRole(project: Partial<Project>): ProjectRole {
@@ -790,7 +809,10 @@ function normalizeProjectMembers(
   const owner = ownerIndex >= 0 ? normalized[ownerIndex] : normalized[0];
   return normalized.map((member) => ({
     ...member,
-    role: member.id === owner.id ? "owner" : "viewer",
+    role:
+      member.id === owner.id
+        ? "owner"
+        : normalizeMemberAccessRole(member.role),
   }));
 }
 
@@ -802,6 +824,7 @@ function normalizeProjectInvites(
       const normalizedInvite: ProjectInvite = {
         id: invite.id ?? createId("invite"),
         email: normalizeEmail(invite.email ?? ""),
+        role: normalizeMemberAccessRole(invite.role),
         token: invite.token ?? createInviteToken(),
         status: invite.status === "accepted" ? "accepted" : "pending",
         invitedAt: invite.invitedAt ?? new Date().toISOString(),
@@ -819,8 +842,9 @@ function normalizeProjectInvites(
 function getProjectMemberCount(project: Project) {
   return Math.max(
     1,
-    project.teamMembers.filter((member) => member.role === "owner" || member.role === "viewer")
-      .length,
+    project.teamMembers.filter((member) =>
+      ["owner", "editor", "viewer"].includes(member.role),
+    ).length,
   );
 }
 
@@ -832,7 +856,18 @@ function getInviteUrl(token: string) {
   return `${window.location.origin}/app?invite=${encodeURIComponent(token)}`;
 }
 
-function openInviteEmailDraft(email: string, projectName: string, token: string) {
+function getInviteAccessLine(role: ProjectMemberAccessRole) {
+  return role === "editor"
+    ? "Open this invite link to sign in and join the project with editor access:"
+    : "Open this invite link to sign in and join the project with read-only access:";
+}
+
+function openInviteEmailDraft(
+  email: string,
+  projectName: string,
+  token: string,
+  role: ProjectMemberAccessRole,
+) {
   if (typeof window === "undefined") {
     return;
   }
@@ -843,7 +878,7 @@ function openInviteEmailDraft(email: string, projectName: string, token: string)
     [
       `You have been invited to join ${projectName} on Tockli.`,
       "",
-      "Open this invite link to sign in and join the project as a read-only user:",
+      getInviteAccessLine(role),
       inviteUrl,
     ].join("\n"),
   );
@@ -862,6 +897,25 @@ function normalizeVolume(volume?: number) {
   return Math.min(100, Math.max(0, Math.round(volume ?? 0)));
 }
 
+function normalizeInteger(
+  value: number | null | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(value ?? fallback)));
+}
+
+function normalizeFocusSound(sound?: string | null): FocusSound {
+  return focusSoundOptions.includes(sound as FocusSound)
+    ? (sound as FocusSound)
+    : initialSettings.focusSound;
+}
+
 function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
   const normalized = {
     ...initialSettings,
@@ -870,13 +924,417 @@ function normalizeSettings(settings?: Partial<UserSettings>): UserSettings {
 
   return {
     ...normalized,
+    breakMinutes: normalizeInteger(
+      settings?.breakMinutes,
+      3,
+      30,
+      initialSettings.breakMinutes,
+    ),
+    dailyPomodoroGoal: normalizeInteger(
+      settings?.dailyPomodoroGoal,
+      1,
+      16,
+      initialSettings.dailyPomodoroGoal,
+    ),
+    focusMinutes: normalizeInteger(
+      settings?.focusMinutes,
+      5,
+      180,
+      initialSettings.focusMinutes,
+    ),
+    focusSound: normalizeFocusSound(settings?.focusSound),
     focusVolume: normalizeVolume(settings?.focusVolume),
+    showNextUp: Boolean(normalized.showNextUp),
+    soundEnabled: Boolean(normalized.soundEnabled),
+    strictMode: Boolean(normalized.strictMode),
     themeMode: normalizeThemeMode(settings?.themeMode),
+    workingDays: normalized.workingDays?.filter((day) => weekdays.includes(day))?.length
+      ? normalized.workingDays.filter((day) => weekdays.includes(day))
+      : initialSettings.workingDays,
+  };
+}
+
+function mapRemoteSettings(row?: RemoteSettingsRow | null): UserSettings {
+  if (!row) {
+    return initialSettings;
+  }
+
+  return normalizeSettings({
+    breakMinutes: row.break_minutes ?? initialSettings.breakMinutes,
+    dailyPomodoroGoal: row.daily_pomodoro_goal ?? initialSettings.dailyPomodoroGoal,
+    focusMinutes: row.focus_minutes ?? initialSettings.focusMinutes,
+    focusSound: row.focus_sound ?? initialSettings.focusSound,
+    showNextUp: row.show_next_up ?? initialSettings.showNextUp,
+    soundEnabled: row.sound_enabled ?? initialSettings.soundEnabled,
+    strictMode: row.strict_mode ?? initialSettings.strictMode,
+    workingDays: row.working_days ?? initialSettings.workingDays,
+  });
+}
+
+function mapSettingsForRemote(userId: string, settings: UserSettings) {
+  return {
+    break_minutes: normalizeInteger(
+      settings.breakMinutes,
+      3,
+      30,
+      initialSettings.breakMinutes,
+    ),
+    daily_pomodoro_goal: normalizeInteger(
+      settings.dailyPomodoroGoal,
+      1,
+      16,
+      initialSettings.dailyPomodoroGoal,
+    ),
+    focus_minutes: normalizeInteger(
+      settings.focusMinutes,
+      5,
+      90,
+      initialSettings.focusMinutes,
+    ),
+    focus_sound: normalizeFocusSound(settings.focusSound),
+    show_next_up: settings.showNextUp,
+    sound_enabled: settings.soundEnabled,
+    strict_mode: settings.strictMode,
+    updated_at: new Date().toISOString(),
+    user_id: userId,
+    working_days: settings.workingDays.filter((day) => weekdays.includes(day)),
+  };
+}
+
+function mapRemoteCategory(row: RemoteCategoryRow): TaskCategory {
+  return {
+    color: row.color || categoryColorOptions[0],
+    id: row.id,
+    name: row.name?.trim() || "New Category",
+    projectId: row.project_id,
+  };
+}
+
+function mapRemoteTask(row: RemoteTaskRow): Task {
+  const tags = (row.task_tags ?? [])
+    .map((tag) => normalizeTag(tag.label))
+    .filter(Boolean)
+    .sort();
+  const subtasks = [...(row.task_subtasks ?? [])]
+    .sort((left, right) => (left.sort_order ?? 0) - (right.sort_order ?? 0))
+    .map((subtask) => ({
+      done: Boolean(subtask.is_done),
+      id: subtask.id,
+      title: subtask.title?.trim() || "Untitled subtask",
+    }));
+  const comments = [...(row.task_comments ?? [])]
+    .sort(
+      (left, right) =>
+        new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+    )
+    .map((comment) => {
+      const profile = relationOne(comment.profiles);
+      const email = normalizeEmail(profile?.email ?? "");
+      return {
+        authorId: comment.author_id,
+        authorName:
+          profile?.display_name?.trim() ||
+          email.split("@")[0] ||
+          "Tockli user",
+        body: comment.body,
+        createdAt: comment.created_at,
+        id: comment.id,
+      };
+    });
+
+  return {
+    categoryId: row.category_id ?? null,
+    comments,
+    description: row.note ?? "",
+    due: row.due_label ?? "",
+    estimate: row.estimate_minutes,
+    id: row.id,
+    priority: row.priority ?? "medium",
+    projectId: row.project_id,
+    spent: row.spent_minutes,
+    status: row.status || "todo",
+    subtasks,
+    tags,
+    title: row.title?.trim() || "Untitled task",
+  };
+}
+
+function mapRemoteSession(row: RemoteSessionRow): FocusSession {
+  return {
+    completedAt: row.completed_at,
+    id: row.id,
+    minutes: row.minutes,
+    note: row.note ?? "",
+    projectId: row.project_id,
+    taskId: row.task_id ?? null,
+    userId: row.user_id,
+  };
+}
+
+function mapRemoteCancellation(row: RemoteCancellationRow): PomodoroCancellation {
+  return {
+    cancelledAt: row.cancelled_at,
+    durationMinutes: row.duration_minutes,
+    elapsedMinutes: row.elapsed_minutes,
+    id: row.id,
+    note: row.note ?? "",
+    projectId: row.project_id,
+    reason: row.reason,
+    taskId: row.task_id ?? null,
+    userId: row.user_id,
+  };
+}
+
+function workspaceContentScore(
+  workspace: Pick<
+    WorkspaceSnapshot,
+    "categories" | "tasks" | "sessions" | "cancellations"
+  >,
+) {
+  return (
+    workspace.categories.length +
+    workspace.tasks.length * 3 +
+    workspace.sessions.length +
+    workspace.cancellations.length
+  );
+}
+
+function storedStateToWorkspace(parsed: StoredState): WorkspaceSnapshot {
+  const settings = normalizeSettings(parsed.settings);
+  return {
+    activeProjectId: parsed.activeProjectId ?? initialProjects[0].id,
+    cancellations: parsed.cancellations ?? [],
+    categories: normalizeCategories(parsed.categories),
+    focusTaskId: parsed.focusTaskId ?? "",
+    projects: normalizeProjects(parsed.projects),
+    selectedTaskId: parsed.selectedTaskId ?? "task-wireframes",
+    sessions: parsed.sessions ?? createDemoSessions(),
+    settings,
+    tasks: normalizeTasks(parsed.tasks),
+  };
+}
+
+async function loadRemoteWorkspaceSnapshot(
+  authUser: User,
+  preferredProjectId?: string,
+): Promise<{ snapshot: WorkspaceSnapshot | null; plan: PlanTier; error?: string }> {
+  if (!supabase) {
+    return { plan: "free", snapshot: null };
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("plan")
+    .eq("id", authUser.id)
+    .maybeSingle();
+
+  const plan = !profileError && (profile?.plan === "free" || profile?.plan === "pro")
+    ? profile.plan
+    : "free";
+
+  const { data: membershipData, error: membershipError } = await supabase
+    .from("project_members")
+    .select(
+      "project_id,user_id,role,profiles(id,email,display_name),projects(id,owner_id,name,description,kind,color,board_columns)",
+    )
+    .eq("user_id", authUser.id);
+
+  if (membershipError) {
+    return { error: membershipError.message, plan, snapshot: null };
+  }
+
+  const membershipRows = (membershipData ?? []) as RemoteMembershipRow[];
+  const remoteProjects = membershipRows
+    .map((membership): Project | null => {
+      const remoteProject = relationOne(membership.projects);
+      if (!remoteProject) {
+        return null;
+      }
+
+      const columns = Array.isArray(remoteProject.board_columns)
+        ? (remoteProject.board_columns as Array<Partial<BoardColumn>>)
+        : undefined;
+
+      return {
+        color: remoteProject.color || "#ff005e",
+        columns: normalizeBoardColumns(columns),
+        currentUserRole: normalizeProjectRole(membership.role),
+        description: remoteProject.description ?? "",
+        id: remoteProject.id,
+        kind: remoteProject.kind,
+        members: 1,
+        name: remoteProject.name,
+        ownerId: remoteProject.owner_id,
+        pendingInvites: [],
+        teamMembers: [],
+      };
+    })
+    .filter((project): project is Project => Boolean(project));
+
+  if (!remoteProjects.length) {
+    const { data: settingsData } = await supabase
+      .from("user_settings")
+      .select(
+        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,show_next_up",
+      )
+      .eq("user_id", authUser.id)
+      .maybeSingle();
+
+    return {
+      plan,
+      snapshot: {
+        activeProjectId: initialProjects[0].id,
+        cancellations: [],
+        categories: [],
+        focusTaskId: "",
+        hasRemoteContent: false,
+        projects: [],
+        selectedTaskId: "",
+        sessions: [],
+        settings: mapRemoteSettings(settingsData as RemoteSettingsRow | null),
+        tasks: [],
+      },
+    };
+  }
+
+  const projectIds = remoteProjects.map((project) => project.id);
+  const ownedProjectIds = remoteProjects
+    .filter((project) => project.currentUserRole === "owner")
+    .map((project) => project.id);
+
+  const [
+    allMembershipResult,
+    inviteResult,
+    categoryResult,
+    taskResult,
+    sessionResult,
+    cancellationResult,
+    settingsResult,
+  ] = await Promise.all([
+    supabase
+      .from("project_members")
+      .select("project_id,user_id,role,profiles(id,email,display_name)")
+      .in("project_id", projectIds),
+    ownedProjectIds.length
+      ? supabase
+          .from("project_invitations")
+          .select("id,project_id,invited_email,role,token,status,created_at,accepted_at")
+          .in("project_id", ownedProjectIds)
+          .eq("status", "pending")
+      : Promise.resolve({ data: [], error: null }),
+    supabase
+      .from("task_categories")
+      .select("id,project_id,name,color")
+      .in("project_id", projectIds)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("tasks")
+      .select(
+        "id,project_id,category_id,title,note,status,priority,estimate_minutes,spent_minutes,due_label,sort_order,created_at,task_tags(label),task_subtasks(id,title,is_done,sort_order),task_comments(id,author_id,body,created_at,profiles(id,email,display_name))",
+      )
+      .in("project_id", projectIds)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("focus_sessions")
+      .select("id,user_id,project_id,task_id,minutes,note,completed_at")
+      .in("project_id", projectIds)
+      .order("completed_at", { ascending: false }),
+    supabase
+      .from("pomodoro_cancellations")
+      .select("id,user_id,project_id,task_id,duration_minutes,elapsed_minutes,reason,note,cancelled_at")
+      .in("project_id", projectIds)
+      .order("cancelled_at", { ascending: false }),
+    supabase
+      .from("user_settings")
+      .select(
+        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,show_next_up",
+      )
+      .eq("user_id", authUser.id)
+      .maybeSingle(),
+  ]);
+
+  const loadError =
+    allMembershipResult.error?.message ||
+    inviteResult.error?.message ||
+    categoryResult.error?.message ||
+    taskResult.error?.message ||
+    sessionResult.error?.message ||
+    cancellationResult.error?.message ||
+    settingsResult.error?.message;
+
+  if (loadError) {
+    return { error: loadError, plan, snapshot: null };
+  }
+
+  const membersByProjectId = new Map<string, ProjectMember[]>();
+  ((allMembershipResult.data ?? []) as RemoteMembershipRow[]).forEach((memberRow) => {
+    const members = membersByProjectId.get(memberRow.project_id) ?? [];
+    members.push(mapRemoteMember(memberRow));
+    membersByProjectId.set(memberRow.project_id, members);
+  });
+
+  const invitesByProjectId = new Map<string, ProjectInvite[]>();
+  ((inviteResult.data ?? []) as RemoteInviteRow[]).forEach((inviteRow) => {
+    const invites = invitesByProjectId.get(inviteRow.project_id) ?? [];
+    invites.push(mapRemoteInvite(inviteRow));
+    invitesByProjectId.set(inviteRow.project_id, invites);
+  });
+
+  const projects = remoteProjects.map((project) => {
+    const teamMembers = normalizeProjectMembers(
+      membersByProjectId.get(project.id),
+      1,
+    );
+    return {
+      ...project,
+      members: teamMembers.length,
+      pendingInvites: invitesByProjectId.get(project.id) ?? [],
+      teamMembers,
+    };
+  });
+  const categories = ((categoryResult.data ?? []) as RemoteCategoryRow[]).map(
+    mapRemoteCategory,
+  );
+  const tasks = ((taskResult.data ?? []) as RemoteTaskRow[]).map(mapRemoteTask);
+  const sessions = ((sessionResult.data ?? []) as RemoteSessionRow[]).map(
+    mapRemoteSession,
+  );
+  const cancellations = (
+    (cancellationResult.data ?? []) as RemoteCancellationRow[]
+  ).map(mapRemoteCancellation);
+  const activeProjectId =
+    preferredProjectId && projects.some((project) => project.id === preferredProjectId)
+      ? preferredProjectId
+      : projects[0]?.id ?? "";
+  const firstOpenTask =
+    tasks.find((task) => task.projectId === activeProjectId && task.status !== "done") ??
+    tasks.find((task) => task.projectId === activeProjectId) ??
+    tasks[0];
+
+  return {
+    plan,
+    snapshot: {
+      activeProjectId,
+      cancellations,
+      categories,
+      focusTaskId: "",
+      hasRemoteContent:
+        categories.length > 0 ||
+        tasks.length > 0 ||
+        sessions.length > 0 ||
+        cancellations.length > 0,
+      projects,
+      selectedTaskId: firstOpenTask?.id ?? "",
+      sessions,
+      settings: mapRemoteSettings(settingsResult.data as RemoteSettingsRow | null),
+      tasks,
+    },
   };
 }
 
 function normalizeProjects(projects?: Array<Partial<Project>>): Project[] {
-  if (!projects?.length) {
+  if (!projects) {
     return initialProjects;
   }
 
@@ -930,7 +1388,7 @@ function normalizeBoardColumns(columns?: Array<Partial<BoardColumn>>): BoardColu
 }
 
 function normalizeCategories(categories?: TaskCategory[]) {
-  if (!categories?.length) {
+  if (!categories) {
     return initialCategories;
   }
 
@@ -941,7 +1399,7 @@ function normalizeCategories(categories?: TaskCategory[]) {
 }
 
 function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[] {
-  if (!tasks?.length) {
+  if (!tasks) {
     return initialTasks;
   }
 
@@ -1002,10 +1460,103 @@ type RemoteInviteRow = {
   id: string;
   project_id: string;
   invited_email: string;
+  role?: string | null;
   token: string;
   status: string;
   created_at: string;
   accepted_at?: string | null;
+};
+
+type RemoteCategoryRow = {
+  id: string;
+  project_id: string;
+  name: string;
+  color: string;
+};
+
+type RemoteTagRow = {
+  label: string;
+};
+
+type RemoteSubtaskRow = {
+  id: string;
+  task_id?: string;
+  title: string;
+  is_done: boolean;
+  sort_order?: number | null;
+};
+
+type RemoteCommentRow = {
+  id: string;
+  task_id?: string;
+  author_id: string;
+  body: string;
+  created_at: string;
+  profiles?: RemoteProfileRow | RemoteProfileRow[] | null;
+};
+
+type RemoteTaskRow = {
+  id: string;
+  project_id: string;
+  category_id?: string | null;
+  title: string;
+  note?: string | null;
+  status: string;
+  priority: Priority;
+  estimate_minutes: number;
+  spent_minutes: number;
+  due_label?: string | null;
+  sort_order?: number | null;
+  created_at?: string | null;
+  task_tags?: RemoteTagRow[] | null;
+  task_subtasks?: RemoteSubtaskRow[] | null;
+  task_comments?: RemoteCommentRow[] | null;
+};
+
+type RemoteSessionRow = {
+  id: string;
+  user_id: string;
+  project_id: string;
+  task_id?: string | null;
+  minutes: number;
+  note?: string | null;
+  completed_at: string;
+};
+
+type RemoteCancellationRow = {
+  id: string;
+  user_id: string;
+  project_id: string;
+  task_id?: string | null;
+  duration_minutes: number;
+  elapsed_minutes: number;
+  reason: CancellationReason;
+  note?: string | null;
+  cancelled_at: string;
+};
+
+type RemoteSettingsRow = {
+  focus_minutes?: number | null;
+  break_minutes?: number | null;
+  daily_pomodoro_goal?: number | null;
+  working_days?: string[] | null;
+  strict_mode?: boolean | null;
+  sound_enabled?: boolean | null;
+  focus_sound?: FocusSound | null;
+  show_next_up?: boolean | null;
+};
+
+type WorkspaceSnapshot = {
+  projects: Project[];
+  categories: TaskCategory[];
+  tasks: Task[];
+  sessions: FocusSession[];
+  cancellations: PomodoroCancellation[];
+  settings: UserSettings;
+  activeProjectId: string;
+  selectedTaskId: string;
+  focusTaskId: string;
+  hasRemoteContent?: boolean;
 };
 
 function mapRemoteMember(row: RemoteMembershipRow): ProjectMember {
@@ -1023,6 +1574,7 @@ function mapRemoteInvite(row: RemoteInviteRow): ProjectInvite {
   return {
     id: row.id,
     email: normalizeEmail(row.invited_email),
+    role: normalizeMemberAccessRole(row.role),
     token: row.token,
     status: row.status === "accepted" ? "accepted" : "pending",
     invitedAt: row.created_at,
@@ -1084,6 +1636,7 @@ export default function Home() {
   );
   const timerDeadlineRef = useRef<number | null>(null);
   const timerCompletionHandledRef = useRef(false);
+  const lastRemoteSyncJsonRef = useRef("");
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -1117,14 +1670,14 @@ export default function Home() {
       const { data, error } = await supabase!.auth.getSession();
 
       if (!alive) {
-        return;
-      }
+      return;
+    }
 
       if (error) {
         setAuthMessage(error.message);
         setAuthReady(true);
-        return;
-      }
+      return;
+    }
 
       if (!data.session) {
         const nextPath = `${window.location.pathname}${window.location.search}`;
@@ -1133,8 +1686,8 @@ export default function Home() {
             nextPath,
           )}&message=Please%20log%20in%20to%20open%20Tockli.`,
         );
-        return;
-      }
+      return;
+    }
 
       setAuthUser(data.session.user);
       setAuthReady(true);
@@ -1171,79 +1724,139 @@ export default function Home() {
 
   const storageKey = authUser ? `${STORAGE_KEY}:${authUser.id}` : STORAGE_KEY;
 
+  const applyWorkspaceSnapshot = useCallback((snapshot: WorkspaceSnapshot) => {
+    const normalizedSettings = normalizeSettings(snapshot.settings);
+    setProjects(snapshot.projects);
+    setCategories(snapshot.categories);
+    setTasks(snapshot.tasks);
+    setSessions(snapshot.sessions);
+    setCancellations(snapshot.cancellations);
+    setSettings(normalizedSettings);
+    setActiveProjectId(snapshot.activeProjectId);
+    setSelectedTaskId(snapshot.selectedTaskId);
+    setFocusTaskId(snapshot.focusTaskId);
+    setRemainingSeconds(normalizedSettings.focusMinutes * 60);
+    setSessionDurationMinutes(normalizedSettings.focusMinutes);
+    setOnboardingOpen(false);
+    setHydrated(true);
+  }, []);
+
   useEffect(() => {
     if (!authReady || (isSupabaseConfigured && !authUser)) {
       return;
     }
 
+    let alive = true;
     const frame = window.requestAnimationFrame(() => {
       const params = new URLSearchParams(window.location.search);
       const inviteToken = params.get("invite");
       const onboardingRequested = params.get("onboarding") === "1" && !inviteToken;
 
-      if (onboardingRequested) {
-        setOnboardingOpen(true);
-        return;
-      }
+      function readStoredWorkspace() {
+        const stored = window.localStorage.getItem(storageKey);
+        const canMigrateLegacyState =
+          Boolean(authUser) &&
+          !window.localStorage.getItem(STORAGE_MIGRATION_KEY);
+        const legacyStored = canMigrateLegacyState
+          ? window.localStorage.getItem(STORAGE_KEY) ??
+            window.localStorage.getItem(LEGACY_STORAGE_KEY)
+          : null;
 
-      const stored = window.localStorage.getItem(storageKey);
-      const canMigrateLegacyState =
-        Boolean(authUser) &&
-        !window.localStorage.getItem(STORAGE_MIGRATION_KEY);
-      const legacyStored = canMigrateLegacyState
-        ? window.localStorage.getItem(STORAGE_KEY) ??
-          window.localStorage.getItem(LEGACY_STORAGE_KEY)
-        : null;
-      const demoSessions = createDemoSessions();
+        if (!stored && !legacyStored) {
+          return null;
+        }
 
-      if (stored || legacyStored) {
         try {
           const parsed = JSON.parse(stored ?? legacyStored ?? "{}") as StoredState;
-          setProjects(normalizeProjects(parsed.projects));
-          setCategories(normalizeCategories(parsed.categories));
-          setTasks(normalizeTasks(parsed.tasks));
-          setSessions(parsed.sessions ?? demoSessions);
-          setCancellations(parsed.cancellations ?? []);
-          setSettings(normalizeSettings(parsed.settings));
-          setActiveProjectId(parsed.activeProjectId ?? initialProjects[0].id);
-          setSelectedTaskId(parsed.selectedTaskId ?? "task-wireframes");
-          setFocusTaskId(parsed.focusTaskId ?? "");
-          setRemainingSeconds(
-            (parsed.settings?.focusMinutes ?? initialSettings.focusMinutes) * 60,
-          );
-          setSessionDurationMinutes(
-            parsed.settings?.focusMinutes ?? initialSettings.focusMinutes,
-          );
-          setOnboardingOpen(false);
-
-          if (legacyStored && authUser) {
-            window.localStorage.setItem(
-              storageKey,
-              JSON.stringify({ ...parsed, onboardingCompleted: true }),
-            );
-            window.localStorage.setItem(STORAGE_MIGRATION_KEY, "true");
-          }
+          return {
+            legacyStored: Boolean(legacyStored),
+            parsed,
+            workspace: storedStateToWorkspace(parsed),
+          };
         } catch {
           window.localStorage.removeItem(storageKey);
-          setOnboardingOpen(!inviteToken);
-          if (inviteToken) {
-            setHydrated(true);
+          return null;
+        }
+      }
+
+      async function hydrateWorkspace() {
+        const storedWorkspace = readStoredWorkspace();
+
+        if (supabase && authUser) {
+          const { error, plan, snapshot: remoteWorkspace } =
+            await loadRemoteWorkspaceSnapshot(authUser);
+
+          if (!alive) {
+            return;
+          }
+
+          setProfilePlan(plan);
+          if (error) {
+            setProjectNotice(error);
+          }
+
+          const localScore = storedWorkspace
+            ? workspaceContentScore(storedWorkspace.workspace)
+            : 0;
+          const shouldMigrateLocalWorkspace = Boolean(
+            storedWorkspace &&
+              storedWorkspace.workspace.projects.length > 0 &&
+              (!remoteWorkspace?.projects.length ||
+                (!remoteWorkspace.hasRemoteContent && localScore > 0)),
+          );
+
+          if (shouldMigrateLocalWorkspace && storedWorkspace) {
+            applyWorkspaceSnapshot(storedWorkspace.workspace);
+            if (storedWorkspace.legacyStored) {
+              window.localStorage.setItem(
+                storageKey,
+                JSON.stringify({
+                  ...storedWorkspace.parsed,
+                  onboardingCompleted: true,
+                }),
+              );
+              window.localStorage.setItem(STORAGE_MIGRATION_KEY, "true");
+            }
+            return;
+          }
+
+          if (remoteWorkspace?.projects.length) {
+            applyWorkspaceSnapshot(remoteWorkspace);
+            return;
           }
         }
-      } else {
-        setOnboardingOpen(!inviteToken);
-        if (inviteToken) {
-          setHydrated(true);
+
+        if (storedWorkspace?.workspace.projects.length) {
+          applyWorkspaceSnapshot(storedWorkspace.workspace);
+          return;
         }
+
+        if (inviteToken) {
+          applyWorkspaceSnapshot({
+            activeProjectId: "",
+            cancellations: [],
+            categories: [],
+            focusTaskId: "",
+            projects: [],
+            selectedTaskId: "",
+            sessions: [],
+            settings: initialSettings,
+            tasks: [],
+          });
+          return;
+        }
+
+        setOnboardingOpen(!inviteToken || onboardingRequested);
       }
 
-      if (stored || legacyStored) {
-        setHydrated(true);
-      }
+      void hydrateWorkspace();
     });
 
-    return () => window.cancelAnimationFrame(frame);
-  }, [authReady, authUser, storageKey]);
+    return () => {
+      alive = false;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [applyWorkspaceSnapshot, authReady, authUser, storageKey]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -1280,6 +1893,602 @@ export default function Home() {
   ]);
 
   useEffect(() => {
+    if (!hydrated || !supabase || !authUser || !projects.length) {
+      return;
+    }
+
+    const syncAuthUser = authUser;
+    let cancelled = false;
+    const snapshotJson = JSON.stringify({
+      activeProjectId,
+      cancellations,
+      categories,
+      focusTaskId,
+      projects,
+      selectedTaskId,
+      sessions,
+      settings,
+      tasks,
+    });
+
+    if (snapshotJson === lastRemoteSyncJsonRef.current) {
+      return;
+    }
+
+    function mapId(value: string, idMap: Map<string, string>) {
+      return idMap.get(value) ?? value;
+    }
+
+    async function syncWorkspaceToRemote() {
+      try {
+        const projectIdMap = new Map<string, string>();
+        const categoryIdMap = new Map<string, string>();
+        const taskIdMap = new Map<string, string>();
+        const subtaskIdMap = new Map<string, string>();
+        const commentIdMap = new Map<string, string>();
+        const sessionIdMap = new Map<string, string>();
+        const cancellationIdMap = new Map<string, string>();
+        const editableLocalProjectIds = new Set(
+          projects
+            .filter((project) => project.currentUserRole === "owner")
+            .map((project) => project.id),
+        );
+
+        const profileResult = await supabase!.from("profiles").upsert(
+          {
+            display_name: appUserName,
+            email: syncAuthUser.email ?? authEmail,
+            id: syncAuthUser.id,
+          },
+          { onConflict: "id" },
+        );
+        if (profileResult.error) {
+          throw new Error(profileResult.error.message);
+        }
+
+        const settingsResult = await supabase!
+          .from("user_settings")
+          .upsert(mapSettingsForRemote(syncAuthUser.id, settings), {
+            onConflict: "user_id",
+          });
+        if (settingsResult.error) {
+          throw new Error(settingsResult.error.message);
+        }
+
+        for (const project of projects) {
+          if (project.currentUserRole !== "owner") {
+            continue;
+          }
+
+          const projectPayload = {
+            board_columns: project.columns,
+            color: project.color,
+            description: project.description,
+            kind: project.kind,
+            name: project.name,
+            owner_id: syncAuthUser.id,
+          };
+
+          if (isUuid(project.id)) {
+            const { error } = await supabase!
+              .from("projects")
+              .upsert(
+                {
+                  id: project.id,
+                  ...projectPayload,
+                },
+                { onConflict: "id" },
+              );
+            if (error) {
+              throw new Error(error.message);
+            }
+          } else {
+            const { data, error } = await supabase!
+              .from("projects")
+              .insert(projectPayload)
+              .select("id")
+              .single();
+            if (error) {
+              throw new Error(error.message);
+            }
+            if (data?.id) {
+              projectIdMap.set(project.id, data.id);
+            }
+          }
+        }
+
+        function remoteProjectId(projectId: string) {
+          return mapId(projectId, projectIdMap);
+        }
+
+        for (const category of categories) {
+          if (!editableLocalProjectIds.has(category.projectId)) {
+            continue;
+          }
+
+          const projectId = remoteProjectId(category.projectId);
+          if (!isUuid(projectId)) {
+            continue;
+          }
+
+          const categoryPayload = {
+            color: category.color,
+            created_by: syncAuthUser.id,
+            name: category.name,
+            project_id: projectId,
+          };
+
+          if (isUuid(category.id)) {
+            const { error } = await supabase!
+              .from("task_categories")
+              .upsert(
+                {
+                  id: category.id,
+                  ...categoryPayload,
+                },
+                { onConflict: "id" },
+              );
+            if (error) {
+              throw new Error(error.message);
+            }
+          } else {
+            const { data, error } = await supabase!
+              .from("task_categories")
+              .insert(categoryPayload)
+              .select("id")
+              .single();
+            if (error) {
+              throw new Error(error.message);
+            }
+            if (data?.id) {
+              categoryIdMap.set(category.id, data.id);
+            }
+          }
+        }
+
+        const syncedEditableTasks: Task[] = [];
+
+        for (const [sortOrder, task] of tasks.entries()) {
+          if (!editableLocalProjectIds.has(task.projectId)) {
+            continue;
+          }
+
+          const projectId = remoteProjectId(task.projectId);
+          if (!isUuid(projectId)) {
+            continue;
+          }
+
+          const mappedCategoryId = task.categoryId
+            ? mapId(task.categoryId, categoryIdMap)
+            : null;
+          const taskPayload = {
+            category_id: mappedCategoryId && isUuid(mappedCategoryId)
+              ? mappedCategoryId
+              : null,
+            created_by: syncAuthUser.id,
+            due_label: task.due || null,
+            estimate_minutes: normalizeInteger(task.estimate, 1, 480, settings.focusMinutes),
+            note: task.description,
+            priority: task.priority,
+            project_id: projectId,
+            sort_order: sortOrder,
+            spent_minutes: Math.max(0, Math.round(task.spent)),
+            status: task.status || "todo",
+            title: task.title || "Untitled task",
+          };
+
+          if (isUuid(task.id)) {
+            const { error } = await supabase!
+              .from("tasks")
+              .upsert(
+                {
+                  id: task.id,
+                  ...taskPayload,
+                },
+                { onConflict: "id" },
+              );
+            if (error) {
+              throw new Error(error.message);
+            }
+          } else {
+            const { data, error } = await supabase!
+              .from("tasks")
+              .insert(taskPayload)
+              .select("id")
+              .single();
+            if (error) {
+              throw new Error(error.message);
+            }
+            if (data?.id) {
+              taskIdMap.set(task.id, data.id);
+            }
+          }
+
+          syncedEditableTasks.push(task);
+        }
+
+        const syncedTaskIds = syncedEditableTasks
+          .map((task) => mapId(task.id, taskIdMap))
+          .filter(isUuid);
+
+        if (syncedTaskIds.length) {
+          const tagDelete = await supabase!
+            .from("task_tags")
+            .delete()
+            .in("task_id", syncedTaskIds);
+          if (tagDelete.error) {
+            throw new Error(tagDelete.error.message);
+          }
+
+          const tagRows = syncedEditableTasks.flatMap((task) => {
+            const taskId = mapId(task.id, taskIdMap);
+            return Array.from(new Set(task.tags.map(normalizeTag).filter(Boolean))).map(
+              (label) => ({
+                label,
+                task_id: taskId,
+              }),
+            );
+          });
+
+          if (tagRows.length) {
+            const { error } = await supabase!.from("task_tags").insert(tagRows);
+            if (error) {
+              throw new Error(error.message);
+            }
+          }
+
+          const subtaskDelete = await supabase!
+            .from("task_subtasks")
+            .delete()
+            .in("task_id", syncedTaskIds);
+          if (subtaskDelete.error) {
+            throw new Error(subtaskDelete.error.message);
+          }
+
+          const subtaskRefs: Array<{
+            localId: string;
+            sortOrder: number;
+            taskId: string;
+          }> = [];
+          const subtaskRows = syncedEditableTasks.flatMap((task) => {
+            const taskId = mapId(task.id, taskIdMap);
+            return task.subtasks.map((subtask, sortOrder) => {
+              subtaskRefs.push({
+                localId: subtask.id,
+                sortOrder,
+                taskId,
+              });
+              return {
+                ...(isUuid(subtask.id) ? { id: subtask.id } : {}),
+                is_done: subtask.done,
+                sort_order: sortOrder,
+                task_id: taskId,
+                title: subtask.title || "Untitled subtask",
+              };
+            });
+          });
+
+          if (subtaskRows.length) {
+            const { data, error } = await supabase!
+              .from("task_subtasks")
+              .insert(subtaskRows)
+              .select("id,task_id,sort_order");
+            if (error) {
+              throw new Error(error.message);
+            }
+
+            const remoteSubtasks = (data ?? []) as Array<{
+              id: string;
+              sort_order: number;
+              task_id: string;
+            }>;
+            const localSubtaskByRemotePosition = new Map(
+              subtaskRefs.map((subtask) => [
+                `${subtask.taskId}:${subtask.sortOrder}`,
+                subtask.localId,
+              ]),
+            );
+
+            remoteSubtasks.forEach((remoteSubtask) => {
+              const localId = localSubtaskByRemotePosition.get(
+                `${remoteSubtask.task_id}:${remoteSubtask.sort_order}`,
+              );
+              if (localId && !isUuid(localId)) {
+                subtaskIdMap.set(localId, remoteSubtask.id);
+              }
+            });
+          }
+        }
+
+        for (const task of syncedEditableTasks) {
+          const taskId = mapId(task.id, taskIdMap);
+          if (!isUuid(taskId)) {
+            continue;
+          }
+
+          for (const comment of task.comments) {
+            const isCurrentUserComment =
+              comment.authorId === syncAuthUser.id ||
+              comment.authorId === currentUser.id;
+
+            if (!isCurrentUserComment) {
+              continue;
+            }
+
+            const commentPayload = {
+              author_id: syncAuthUser.id,
+              body: comment.body,
+              created_at: comment.createdAt,
+              task_id: taskId,
+            };
+
+            if (isUuid(comment.id)) {
+              const { error } = await supabase!
+                .from("task_comments")
+                .upsert(
+                  {
+                    id: comment.id,
+                    ...commentPayload,
+                  },
+                  { onConflict: "id" },
+                );
+              if (error) {
+                throw new Error(error.message);
+              }
+            } else {
+              const { data, error } = await supabase!
+                .from("task_comments")
+                .insert(commentPayload)
+                .select("id")
+                .single();
+              if (error) {
+                throw new Error(error.message);
+              }
+              if (data?.id) {
+                commentIdMap.set(comment.id, data.id);
+              }
+            }
+          }
+        }
+
+        for (const session of sessions) {
+          if (session.userId && session.userId !== syncAuthUser.id) {
+            continue;
+          }
+
+          const projectId = remoteProjectId(session.projectId);
+          if (!isUuid(projectId)) {
+            continue;
+          }
+
+          const mappedTaskId = session.taskId ? mapId(session.taskId, taskIdMap) : null;
+          const sessionPayload = {
+            completed_at: session.completedAt,
+            minutes: normalizeInteger(session.minutes, 1, 480, settings.focusMinutes),
+            note: session.note,
+            project_id: projectId,
+            task_id: mappedTaskId && isUuid(mappedTaskId) ? mappedTaskId : null,
+            user_id: syncAuthUser.id,
+          };
+
+          if (isUuid(session.id)) {
+            const { error } = await supabase!
+              .from("focus_sessions")
+              .upsert(
+                {
+                  id: session.id,
+                  ...sessionPayload,
+                },
+                { onConflict: "id" },
+              );
+            if (error) {
+              throw new Error(error.message);
+            }
+          } else {
+            const { data, error } = await supabase!
+              .from("focus_sessions")
+              .insert(sessionPayload)
+              .select("id")
+              .single();
+            if (error) {
+              throw new Error(error.message);
+            }
+            if (data?.id) {
+              sessionIdMap.set(session.id, data.id);
+            }
+          }
+        }
+
+        for (const cancellation of cancellations) {
+          if (cancellation.userId && cancellation.userId !== syncAuthUser.id) {
+            continue;
+          }
+
+          const projectId = remoteProjectId(cancellation.projectId);
+          if (!isUuid(projectId)) {
+            continue;
+          }
+
+          const mappedTaskId = cancellation.taskId
+            ? mapId(cancellation.taskId, taskIdMap)
+            : null;
+          const durationMinutes = normalizeInteger(
+            cancellation.durationMinutes,
+            5,
+            180,
+            settings.focusMinutes,
+          );
+          const cancellationPayload = {
+            cancelled_at: cancellation.cancelledAt,
+            duration_minutes: durationMinutes,
+            elapsed_minutes: Math.min(
+              durationMinutes,
+              Math.max(0, Math.round(cancellation.elapsedMinutes)),
+            ),
+            note: cancellation.note,
+            project_id: projectId,
+            reason: cancellation.reason,
+            task_id: mappedTaskId && isUuid(mappedTaskId) ? mappedTaskId : null,
+            user_id: syncAuthUser.id,
+          };
+
+          if (isUuid(cancellation.id)) {
+            const { error } = await supabase!
+              .from("pomodoro_cancellations")
+              .upsert(
+                {
+                  id: cancellation.id,
+                  ...cancellationPayload,
+                },
+                { onConflict: "id" },
+              );
+            if (error) {
+              throw new Error(error.message);
+            }
+          } else {
+            const { data, error } = await supabase!
+              .from("pomodoro_cancellations")
+              .insert(cancellationPayload)
+              .select("id")
+              .single();
+            if (error) {
+              throw new Error(error.message);
+            }
+            if (data?.id) {
+              cancellationIdMap.set(cancellation.id, data.id);
+            }
+          }
+        }
+
+        const hasMappedIds = [
+          projectIdMap,
+          categoryIdMap,
+          taskIdMap,
+          subtaskIdMap,
+          commentIdMap,
+          sessionIdMap,
+          cancellationIdMap,
+        ].some((idMap) => idMap.size > 0);
+
+        if (cancelled) {
+          return;
+        }
+
+        if (hasMappedIds) {
+          setProjects((current) =>
+            current.map((project) => ({
+              ...project,
+              id: mapId(project.id, projectIdMap),
+              ownerId:
+                project.currentUserRole === "owner"
+                  ? syncAuthUser.id
+                  : project.ownerId,
+              teamMembers: project.teamMembers.map((member) =>
+                member.role === "owner" &&
+                (member.id === currentUser.id || member.id === project.ownerId)
+                  ? {
+                      ...member,
+                      email: authEmail,
+                      id: syncAuthUser.id,
+                      name: appUserName,
+                    }
+                  : member,
+              ),
+            })),
+          );
+          setCategories((current) =>
+            current.map((category) => ({
+              ...category,
+              id: mapId(category.id, categoryIdMap),
+              projectId: mapId(category.projectId, projectIdMap),
+            })),
+          );
+          setTasks((current) =>
+            current.map((task) => ({
+              ...task,
+              categoryId: task.categoryId
+                ? mapId(task.categoryId, categoryIdMap)
+                : null,
+              comments: task.comments.map((comment) => ({
+                ...comment,
+                authorId:
+                  comment.authorId === currentUser.id
+                    ? syncAuthUser.id
+                    : comment.authorId,
+                authorName:
+                  comment.authorId === currentUser.id ? appUserName : comment.authorName,
+                id: mapId(comment.id, commentIdMap),
+              })),
+              id: mapId(task.id, taskIdMap),
+              projectId: mapId(task.projectId, projectIdMap),
+              subtasks: task.subtasks.map((subtask) => ({
+                ...subtask,
+                id: mapId(subtask.id, subtaskIdMap),
+              })),
+            })),
+          );
+          setSessions((current) =>
+            current.map((session) => ({
+              ...session,
+              id: mapId(session.id, sessionIdMap),
+              projectId: mapId(session.projectId, projectIdMap),
+              taskId: session.taskId ? mapId(session.taskId, taskIdMap) : null,
+              userId: session.userId ?? syncAuthUser.id,
+            })),
+          );
+          setCancellations((current) =>
+            current.map((cancellation) => ({
+              ...cancellation,
+              id: mapId(cancellation.id, cancellationIdMap),
+              projectId: mapId(cancellation.projectId, projectIdMap),
+              taskId: cancellation.taskId
+                ? mapId(cancellation.taskId, taskIdMap)
+                : null,
+              userId: cancellation.userId ?? syncAuthUser.id,
+            })),
+          );
+          setActiveProjectId((current) => mapId(current, projectIdMap));
+          setSelectedTaskId((current) => mapId(current, taskIdMap));
+          setFocusTaskId((current) => mapId(current, taskIdMap));
+        } else {
+          lastRemoteSyncJsonRef.current = snapshotJson;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setProjectNotice(
+            error instanceof Error
+              ? `Sync issue: ${error.message}`
+              : "Sync issue: your latest changes stayed in this browser.",
+          );
+        }
+      }
+    }
+
+    const timeout = window.setTimeout(() => {
+      void syncWorkspaceToRemote();
+    }, 900);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [
+    activeProjectId,
+    appUserName,
+    authEmail,
+    authUser,
+    cancellations,
+    categories,
+    focusTaskId,
+    hydrated,
+    projects,
+    selectedTaskId,
+    sessions,
+    settings,
+    tasks,
+  ]);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = settings.themeMode;
     document.documentElement.style.colorScheme = settings.themeMode;
 
@@ -1295,128 +2504,23 @@ export default function Home() {
         return;
       }
 
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("plan")
-        .eq("id", authUser.id)
-        .maybeSingle();
-
-      if (!profileError && (profile?.plan === "free" || profile?.plan === "pro")) {
-        setProfilePlan(profile.plan);
-      }
-
-      const { data: membershipData, error: membershipError } = await supabase
-        .from("project_members")
-        .select(
-          "project_id,user_id,role,profiles(id,email,display_name),projects(id,owner_id,name,description,kind,color,board_columns)",
-        )
-        .eq("user_id", authUser.id);
-
-      if (membershipError) {
-        setProjectNotice(membershipError.message);
-        return;
-      }
-
-      const membershipRows = (membershipData ?? []) as RemoteMembershipRow[];
-      const remoteProjects = membershipRows
-        .map((membership): Project | null => {
-          const remoteProject = relationOne(membership.projects);
-          if (!remoteProject) {
-            return null;
-          }
-
-          const columns = Array.isArray(remoteProject.board_columns)
-            ? (remoteProject.board_columns as Array<Partial<BoardColumn>>)
-            : undefined;
-
-          return {
-            id: remoteProject.id,
-            ownerId: remoteProject.owner_id,
-            name: remoteProject.name,
-            description: remoteProject.description ?? "",
-            kind: remoteProject.kind,
-            color: remoteProject.color || "#ff005e",
-            currentUserRole: normalizeProjectRole(membership.role),
-            members: 1,
-            teamMembers: [],
-            pendingInvites: [],
-            columns: normalizeBoardColumns(columns),
-          };
-        })
-        .filter((project): project is Project => Boolean(project));
-
-      if (!remoteProjects.length) {
-        return;
-      }
-
-      const projectIds = remoteProjects.map((project) => project.id);
-      const { data: allMembershipData } = await supabase
-        .from("project_members")
-        .select("project_id,user_id,role,profiles(id,email,display_name)")
-        .in("project_id", projectIds);
-
-      const membersByProjectId = new Map<string, ProjectMember[]>();
-      ((allMembershipData ?? []) as RemoteMembershipRow[]).forEach((memberRow) => {
-        const members = membersByProjectId.get(memberRow.project_id) ?? [];
-        members.push(mapRemoteMember(memberRow));
-        membersByProjectId.set(memberRow.project_id, members);
-      });
-
-      const ownedProjectIds = remoteProjects
-        .filter((project) => project.currentUserRole === "owner")
-        .map((project) => project.id);
-      const invitesByProjectId = new Map<string, ProjectInvite[]>();
-
-      if (ownedProjectIds.length) {
-        const { data: inviteData } = await supabase
-          .from("project_invitations")
-          .select("id,project_id,invited_email,token,status,created_at,accepted_at")
-          .in("project_id", ownedProjectIds)
-          .eq("status", "pending");
-
-        ((inviteData ?? []) as RemoteInviteRow[]).forEach((inviteRow) => {
-          const invites = invitesByProjectId.get(inviteRow.project_id) ?? [];
-          invites.push(mapRemoteInvite(inviteRow));
-          invitesByProjectId.set(inviteRow.project_id, invites);
-        });
-      }
-
-      const hydratedProjects = remoteProjects.map((project) => {
-        const teamMembers = normalizeProjectMembers(
-          membersByProjectId.get(project.id),
-          1,
-        );
-        return {
-          ...project,
-          teamMembers,
-          members: teamMembers.length,
-          pendingInvites: invitesByProjectId.get(project.id) ?? [],
-        };
-      });
-
-      setProjects(hydratedProjects);
-      setActiveProjectId((current) =>
-        preferredProjectId && hydratedProjects.some((project) => project.id === preferredProjectId)
-          ? preferredProjectId
-          : hydratedProjects.some((project) => project.id === current)
-            ? current
-            : hydratedProjects[0].id,
+      const { error, plan, snapshot } = await loadRemoteWorkspaceSnapshot(
+        authUser,
+        preferredProjectId,
       );
+      setProfilePlan(plan);
+
+      if (error) {
+        setProjectNotice(error);
+        return;
+      }
+
+      if (snapshot?.projects.length) {
+        applyWorkspaceSnapshot(snapshot);
+      }
     },
-    [authUser],
+    [applyWorkspaceSnapshot, authUser],
   );
-
-  useEffect(() => {
-    if (!hydrated) {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      void refreshRemoteWorkspace();
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [hydrated, refreshRemoteWorkspace]);
 
   useEffect(() => {
     if (!authReady || !hydrated) {
@@ -1445,11 +2549,12 @@ export default function Home() {
           return;
         }
 
-        const acceptedProject = Array.isArray(data) ? data[0] : null;
-        if (acceptedProject?.project_id) {
-          setProjectNotice(
-            `You joined ${acceptedProject.project_name} as a read-only user.`,
-          );
+          const acceptedProject = Array.isArray(data) ? data[0] : null;
+          if (acceptedProject?.project_id) {
+            const acceptedRole = normalizeProjectRole(acceptedProject.role);
+            setProjectNotice(
+              `You joined ${acceptedProject.project_name} as ${projectRoleLabels[acceptedRole]}.`,
+            );
           trackEvent("project_invite_accepted", {
             project_id: acceptedProject.project_id,
           });
@@ -1472,13 +2577,13 @@ export default function Home() {
               return project;
             }
 
-            const member: ProjectMember = {
-              id: createId("member"),
-              name: invite.email.split("@")[0] || "Read-only teammate",
-              email: invite.email,
-              role: "viewer",
-              joinedAt: new Date().toISOString(),
-            };
+              const member: ProjectMember = {
+                id: createId("member"),
+                name: invite.email.split("@")[0] || "Tockli teammate",
+                email: invite.email,
+                role: invite.role,
+                joinedAt: new Date().toISOString(),
+              };
             const teamMembers = normalizeProjectMembers([
               ...project.teamMembers,
               member,
@@ -2054,7 +3159,7 @@ export default function Home() {
     );
   }
 
-  function deleteTask(taskId: string) {
+  async function deleteTask(taskId: string) {
     const task = tasks.find((item) => item.id === taskId);
     if (!task || !canEditProject(task.projectId)) {
       return;
@@ -2062,6 +3167,15 @@ export default function Home() {
 
     if (isRunning && focusTaskId === taskId) {
       return;
+    }
+
+    if (supabase && authUser && isUuid(task.id)) {
+      const { error } = await supabase.from("tasks").delete().eq("id", task.id);
+
+      if (error) {
+        setProjectNotice(error.message);
+        return;
+      }
     }
 
     setTasks((current) => current.filter((task) => task.id !== taskId));
@@ -2184,7 +3298,11 @@ export default function Home() {
     return migratedProject;
   }
 
-  async function sendRemoteProjectInvite(project: Project, email: string) {
+  async function sendRemoteProjectInvite(
+    project: Project,
+    email: string,
+    role: ProjectMemberAccessRole,
+  ) {
     const { data, error } = await supabase!.auth.getSession();
 
     if (error) {
@@ -2200,6 +3318,7 @@ export default function Home() {
       body: JSON.stringify({
         email,
         projectId: project.id,
+        role,
       }),
       headers: {
         authorization: `Bearer ${accessToken}`,
@@ -2231,12 +3350,21 @@ export default function Home() {
     };
   }
 
-  async function deliverLocalInviteEmail(email: string, projectName: string, token: string) {
-    openInviteEmailDraft(email, projectName, token);
+  async function deliverLocalInviteEmail(
+    email: string,
+    projectName: string,
+    token: string,
+    role: ProjectMemberAccessRole,
+  ) {
+    openInviteEmailDraft(email, projectName, token, role);
     return "draft";
   }
 
-  async function createProjectInvites(project: Project, emails: string[]) {
+  async function createProjectInvites(
+    project: Project,
+    emails: string[],
+    role: ProjectMemberAccessRole,
+  ) {
     const existingEmails = new Set([
       ...project.teamMembers.map((member) => normalizeEmail(member.email)),
       ...project.pendingInvites.map((invite) => normalizeEmail(invite.email)),
@@ -2252,7 +3380,7 @@ export default function Home() {
 
     for (const email of inviteEmails) {
       if (supabase && authUser && isUuid(project.id)) {
-        const result = await sendRemoteProjectInvite(project, email);
+        const result = await sendRemoteProjectInvite(project, email, role);
         createdInvites.push(result.invite);
         if (result.delivery === "manual_link") {
           manualLinkCount += 1;
@@ -2264,6 +3392,7 @@ export default function Home() {
         const invite: ProjectInvite = {
           id: createId("invite"),
           email,
+          role,
           token: createInviteToken(),
           status: "pending",
           invitedAt: new Date().toISOString(),
@@ -2273,6 +3402,7 @@ export default function Home() {
           email,
           project.name,
           invite.token,
+          role,
         );
         draftCount += 1;
       }
@@ -2324,15 +3454,26 @@ export default function Home() {
     if (projectDialog?.mode === "edit") {
       if (!existingProject || existingProject.currentUserRole !== "owner") {
         throw new Error("Only the project admin can edit team members.");
-      }
+        }
 
-      const project = await ensureRemoteProject(existingProject);
-      const retainedMemberIds = new Set(values.retainedMemberIds);
-      const retainedInviteIds = new Set(values.retainedInviteIds);
-      const removedMemberIds = project.teamMembers
-        .filter(
-          (member) =>
-            member.role !== "owner" &&
+        const project = await ensureRemoteProject(existingProject);
+        const retainedMemberIds = new Set(values.retainedMemberIds);
+        const retainedInviteIds = new Set(values.retainedInviteIds);
+        const retainedMemberRoleUpdates = project.teamMembers
+          .filter(
+            (member) =>
+              member.role !== "owner" &&
+              values.kind === "team" &&
+              retainedMemberIds.has(member.id),
+          )
+          .map((member) => ({
+            ...member,
+            role: normalizeMemberAccessRole(values.memberRoles[member.id] ?? member.role),
+          }));
+        const removedMemberIds = project.teamMembers
+          .filter(
+            (member) =>
+              member.role !== "owner" &&
             (values.kind !== "team" || !retainedMemberIds.has(member.id)),
         )
         .map((member) => member.id);
@@ -2355,22 +3496,34 @@ export default function Home() {
           .eq("id", project.id);
 
         if (error) {
-          throw new Error(error.message);
-        }
-
-        if (removedMemberIds.length) {
-          const { error: memberError } = await supabase
-            .from("project_members")
-            .delete()
-            .eq("project_id", project.id)
-            .in("user_id", removedMemberIds);
-
-          if (memberError) {
-            throw new Error(memberError.message);
+            throw new Error(error.message);
           }
-        }
 
-        if (removedInviteIds.length) {
+          if (removedMemberIds.length) {
+            const { error: memberError } = await supabase
+              .from("project_members")
+              .delete()
+              .eq("project_id", project.id)
+              .in("user_id", removedMemberIds);
+
+            if (memberError) {
+              throw new Error(memberError.message);
+            }
+          }
+
+          for (const member of retainedMemberRoleUpdates) {
+            const { error: roleError } = await supabase
+              .from("project_members")
+              .update({ role: member.role })
+              .eq("project_id", project.id)
+              .eq("user_id", member.id);
+
+            if (roleError) {
+              throw new Error(roleError.message);
+            }
+          }
+
+          if (removedInviteIds.length) {
           const { error: inviteError } = await supabase
             .from("project_invitations")
             .update({
@@ -2383,18 +3536,30 @@ export default function Home() {
           if (inviteError) {
             throw new Error(inviteError.message);
           }
+          }
         }
-      }
 
-      const teamMembers =
-        values.kind === "team"
-          ? normalizeProjectMembers(
-              project.teamMembers.filter(
-                (member) => member.role === "owner" || retainedMemberIds.has(member.id),
-              ),
-              1,
-            )
-          : project.teamMembers.filter((member) => member.role === "owner");
+        const teamMembers =
+          values.kind === "team"
+            ? normalizeProjectMembers(
+                project.teamMembers
+                  .filter(
+                    (member) =>
+                      member.role === "owner" || retainedMemberIds.has(member.id),
+                  )
+                  .map((member) =>
+                    member.role === "owner"
+                      ? member
+                      : {
+                          ...member,
+                          role: normalizeMemberAccessRole(
+                            values.memberRoles[member.id] ?? member.role,
+                          ),
+                        },
+                  ),
+                1,
+              )
+            : project.teamMembers.filter((member) => member.role === "owner");
       const retainedInvites =
         values.kind === "team"
           ? project.pendingInvites.filter((invite) => retainedInviteIds.has(invite.id))
@@ -2407,12 +3572,16 @@ export default function Home() {
         color: values.color,
         teamMembers,
         members: teamMembers.length,
-        pendingInvites: retainedInvites,
-      };
-      const newInvites =
-        values.kind === "team"
-          ? await createProjectInvites(nextProject, values.inviteEmails)
-          : [];
+          pendingInvites: retainedInvites,
+        };
+        const newInvites =
+          values.kind === "team"
+            ? await createProjectInvites(
+                nextProject,
+                values.inviteEmails,
+                values.inviteRole,
+              )
+            : [];
       const finalProject = {
         ...nextProject,
         pendingInvites: [...nextProject.pendingInvites, ...newInvites],
@@ -2429,9 +3598,6 @@ export default function Home() {
         removed_members: removedMemberIds.length,
       });
 
-      if (supabase && authUser) {
-        await refreshRemoteWorkspace(finalProject.id);
-      }
       return;
     }
 
@@ -2476,10 +3642,10 @@ export default function Home() {
       };
     }
 
-    const newInvites =
-      values.kind === "team"
-        ? await createProjectInvites(project, values.inviteEmails)
-        : [];
+      const newInvites =
+        values.kind === "team"
+          ? await createProjectInvites(project, values.inviteEmails, values.inviteRole)
+          : [];
     project = {
       ...project,
       pendingInvites: newInvites,
@@ -2505,9 +3671,6 @@ export default function Home() {
       invited_members: newInvites.length,
     });
 
-    if (supabase && authUser) {
-      await refreshRemoteWorkspace(project.id);
-    }
   }
 
   async function deleteProject(projectId: string) {
@@ -3577,7 +4740,18 @@ function ProjectDialog({
     project?.color ?? (initialKind === "team" ? "#25a565" : "#ff005e"),
   );
   const [inviteInput, setInviteInput] = useState("");
+  const [inviteRole, setInviteRole] =
+    useState<ProjectMemberAccessRole>("editor");
   const [inviteEmails, setInviteEmails] = useState<string[]>([]);
+  const [memberRoles, setMemberRoles] = useState<
+    Record<string, ProjectMemberAccessRole>
+  >(() =>
+    Object.fromEntries(
+      (project?.teamMembers ?? [])
+        .filter((member) => member.role !== "owner")
+        .map((member) => [member.id, normalizeMemberAccessRole(member.role)]),
+    ),
+  );
   const [retainedMemberIds, setRetainedMemberIds] = useState(
     () => new Set(project?.teamMembers.map((member) => member.id) ?? [owner.id]),
   );
@@ -3665,8 +4839,10 @@ function ProjectDialog({
       await onSave({
         color,
         description,
+        inviteRole,
         inviteEmails: kind === "team" ? inviteEmails : [],
         kind,
+        memberRoles,
         name,
         retainedInviteIds: Array.from(retainedInviteIds),
         retainedMemberIds: [owner.id, ...Array.from(retainedMemberIds)],
@@ -3818,15 +4994,15 @@ function ProjectDialog({
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <UserPlus size={17} aria-hidden="true" />
-                  Team members
-                </div>
-                <p className="mt-1 text-xs text-[var(--muted)]">
-                  {teamLocked
-                    ? "Free plan limit reached"
-                    : "One admin, invited users are read-only"}
-                </p>
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <UserPlus size={17} aria-hidden="true" />
+                    Team members
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--muted)]">
+                    {teamLocked
+                      ? "Free plan limit reached"
+                      : "One admin, teammates can edit or view only"}
+                  </p>
               </div>
               <span className="rounded-md bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
                 {planLabels[planTier]} plan
@@ -3855,13 +5031,30 @@ function ProjectDialog({
                   <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--green-soft)] text-[var(--green)]">
                     <Users size={16} aria-hidden="true" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold">{member.name}</p>
-                    <p className="truncate text-xs text-[var(--muted)]">{member.email}</p>
-                  </div>
-                  <span className="rounded bg-[var(--surface-hover)] px-2 py-1 text-xs font-semibold text-[var(--muted)]">
-                    {projectRoleLabels.viewer}
-                  </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{member.name}</p>
+                      <p className="truncate text-xs text-[var(--muted)]">{member.email}</p>
+                    </div>
+                    <label className="shrink-0">
+                      <span className="sr-only">Access for {member.email}</span>
+                      <select
+                        className="h-8 rounded-md border border-[var(--border)] bg-[var(--surface-hover)] px-2 text-xs font-semibold text-[var(--muted)] outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={teamSectionDisabled}
+                        value={memberRoles[member.id] ?? normalizeMemberAccessRole(member.role)}
+                        onChange={(event) =>
+                          setMemberRoles((current) => ({
+                            ...current,
+                            [member.id]: normalizeMemberAccessRole(event.target.value),
+                          }))
+                        }
+                      >
+                        {memberAccessOptions.map((option) => (
+                          <option key={option} value={option}>
+                            {projectRoleLabels[option]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   <button
                     aria-label={`Remove ${member.email}`}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
@@ -3885,13 +5078,15 @@ function ProjectDialog({
                   key={invite.id}
                   className="flex items-center gap-3 rounded-md border border-dashed border-[var(--border-strong)] bg-[var(--surface)] p-3"
                 >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--amber-soft)] text-[var(--amber)]">
-                    <Mail size={16} aria-hidden="true" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold">{invite.email}</p>
-                    <p className="truncate text-xs text-[var(--muted)]">Invite pending</p>
-                  </div>
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--amber-soft)] text-[var(--amber)]">
+                      <Mail size={16} aria-hidden="true" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold">{invite.email}</p>
+                      <p className="truncate text-xs text-[var(--muted)]">
+                        Invite pending - {projectRoleLabels[invite.role]}
+                      </p>
+                    </div>
                   <button
                     aria-label={`Copy invite link for ${invite.email}`}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
@@ -3925,12 +5120,12 @@ function ProjectDialog({
                   className="flex items-center gap-3 rounded-md border border-[var(--accent-border)] bg-[var(--accent-soft)] p-3"
                 >
                   <Mail size={16} className="shrink-0 text-[var(--accent)]" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">
-                    {email}
-                  </span>
-                  <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--danger)]">
-                    New invite
-                  </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                      {email}
+                    </span>
+                    <span className="rounded bg-[var(--surface)] px-2 py-1 text-xs font-semibold text-[var(--danger)]">
+                      {projectRoleLabels[inviteRole]}
+                    </span>
                   <button
                     aria-label={`Remove invite for ${email}`}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--danger)] transition hover:bg-[var(--surface)]"
@@ -3949,12 +5144,12 @@ function ProjectDialog({
             </div>
 
             <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-              <label className="sr-only" htmlFor="project-invite-email">
-                Invite email
-              </label>
-              <input
-                id="project-invite-email"
-                className="h-11 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)] disabled:cursor-not-allowed"
+                <label className="sr-only" htmlFor="project-invite-email">
+                  Invite email
+                </label>
+                <input
+                  id="project-invite-email"
+                  className="h-11 min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)] disabled:cursor-not-allowed"
                 disabled={teamSectionDisabled}
                 placeholder="teammate@example.com"
                 type="email"
@@ -3963,11 +5158,29 @@ function ProjectDialog({
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
-                    addInviteEmails();
+                      addInviteEmails();
+                    }
+                  }}
+                />
+                <label className="sr-only" htmlFor="project-invite-role">
+                  Invite access
+                </label>
+                <select
+                  id="project-invite-role"
+                  className="h-11 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed"
+                  disabled={teamSectionDisabled}
+                  value={inviteRole}
+                  onChange={(event) =>
+                    setInviteRole(normalizeMemberAccessRole(event.target.value))
                   }
-                }}
-              />
-              <button
+                >
+                  {memberAccessOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {projectRoleLabels[option]}
+                    </option>
+                  ))}
+                </select>
+                <button
                 className="flex h-11 items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm font-semibold text-[var(--muted)] transition enabled:hover:border-[var(--accent)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed"
                 disabled={teamSectionDisabled}
                 type="button"
@@ -4765,28 +5978,85 @@ function TaskCard({
 }) {
   const completedSubtasks = task.subtasks.filter((subtask) => subtask.done).length;
   const subtaskCount = task.subtasks.length;
-  const [timerMenuOpen, setTimerMenuOpen] = useState(false);
-  const [timerMinutes, setTimerMinutes] = useState(defaultFocusMinutes);
-  const timerMenuRef = useRef<HTMLDivElement | null>(null);
+    const [timerMenuOpen, setTimerMenuOpen] = useState(false);
+    const [timerMinutes, setTimerMinutes] = useState(defaultFocusMinutes);
+    const [timerMenuPosition, setTimerMenuPosition] = useState<{
+      left: number;
+      top: number;
+    } | null>(null);
+    const timerButtonRef = useRef<HTMLButtonElement | null>(null);
+    const timerMenuRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!timerMenuOpen) {
-      return;
-    }
-
-    function closeTimerMenu(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        !timerMenuRef.current?.contains(event.target)
-      ) {
-        setTimerMenuOpen(false);
+    const updateTimerMenuPosition = useCallback(() => {
+      const anchor = timerButtonRef.current;
+      if (!anchor) {
+        return;
       }
-    }
 
-    document.addEventListener("pointerdown", closeTimerMenu, true);
-    return () =>
-      document.removeEventListener("pointerdown", closeTimerMenu, true);
-  }, [timerMenuOpen]);
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuWidth = timerMenuRef.current?.offsetWidth ?? 256;
+      const menuHeight = timerMenuRef.current?.offsetHeight ?? 220;
+      const margin = 12;
+      const gap = 8;
+      const left = Math.min(
+        window.innerWidth - menuWidth - margin,
+        Math.max(margin, anchorRect.right - menuWidth),
+      );
+      const hasRoomBelow = window.innerHeight - anchorRect.bottom >= menuHeight + gap;
+      const top = hasRoomBelow
+        ? anchorRect.bottom + gap
+        : Math.max(margin, anchorRect.top - menuHeight - gap);
+      const maxTop = Math.max(margin, window.innerHeight - menuHeight - margin);
+
+      setTimerMenuPosition({
+        left,
+        top: Math.min(maxTop, Math.max(margin, top)),
+      });
+    }, []);
+
+    useEffect(() => {
+      if (!timerMenuOpen) {
+        return;
+      }
+
+      updateTimerMenuPosition();
+      const frame = window.requestAnimationFrame(updateTimerMenuPosition);
+
+      function closeTimerMenu(event: PointerEvent) {
+        if (
+          event.target instanceof Node &&
+          !timerMenuRef.current?.contains(event.target) &&
+          !timerButtonRef.current?.contains(event.target)
+        ) {
+          setTimerMenuOpen(false);
+        }
+      }
+
+      function closeTimerMenuOnEscape(event: KeyboardEvent) {
+        if (event.key === "Escape") {
+          setTimerMenuOpen(false);
+        }
+      }
+
+      document.addEventListener("pointerdown", closeTimerMenu, true);
+      window.addEventListener("keydown", closeTimerMenuOnEscape);
+      window.addEventListener("resize", updateTimerMenuPosition);
+      window.addEventListener("scroll", updateTimerMenuPosition, true);
+      return () => {
+        window.cancelAnimationFrame(frame);
+        document.removeEventListener("pointerdown", closeTimerMenu, true);
+        window.removeEventListener("keydown", closeTimerMenuOnEscape);
+        window.removeEventListener("resize", updateTimerMenuPosition);
+        window.removeEventListener("scroll", updateTimerMenuPosition, true);
+      };
+    }, [timerMenuOpen, updateTimerMenuPosition]);
+
+    useEffect(() => {
+      if (isTimerRunning) {
+        const frame = window.requestAnimationFrame(() => setTimerMenuOpen(false));
+        return () => window.cancelAnimationFrame(frame);
+      }
+    }, [isTimerRunning]);
 
   return (
     <article
@@ -4890,10 +6160,11 @@ function TaskCard({
                 {formatDueDate(task.due)}
               </span>
             ) : null}
-          </div>
-          <button
-            aria-label={
-              isFocusTask
+            </div>
+            <button
+              ref={timerButtonRef}
+              aria-label={
+                isFocusTask
                 ? `${task.title} is the active Pomodoro task`
                 : isTimerRunning
                   ? `Switch Pomodoro to ${task.title}`
@@ -4917,13 +6188,14 @@ function TaskCard({
               event.stopPropagation();
               if (isTimerRunning) {
                 onStartTask(task.id, defaultFocusMinutes);
-                setTimerMenuOpen(false);
-                return;
-              }
+                  setTimerMenuOpen(false);
+                  return;
+                }
 
-              setTimerMinutes(defaultFocusMinutes);
-              setTimerMenuOpen((current) => !current);
-            }}
+                setTimerMinutes(defaultFocusMinutes);
+                setTimerMenuPosition(null);
+                setTimerMenuOpen((current) => !current);
+              }}
           >
             {isFocusTask ? (
               <Clock3
@@ -4937,79 +6209,95 @@ function TaskCard({
           </button>
         </div>
 
-        {timerMenuOpen && !isTimerRunning ? (
-          <div
-            ref={timerMenuRef}
-            aria-label={`Start Pomodoro for ${task.title}`}
-            className="absolute bottom-11 right-2 z-30 w-64 rounded-md border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-left shadow-[var(--shadow-float-strong)]"
-            role="dialog"
-            onClick={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-bold text-[var(--foreground)]">Pomodoro length</p>
-              <button
-                aria-label="Close timer options"
-                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
-                type="button"
-                onClick={() => setTimerMenuOpen(false)}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="mt-3 grid grid-cols-3 gap-1.5">
-              {[5, 10, 15, 25, 45, 60].map((minutes) => (
-                <button
-                  key={minutes}
-                  aria-pressed={timerMinutes === minutes}
-                  className={`h-8 rounded-md border text-xs font-semibold transition ${
-                    timerMinutes === minutes
-                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
-                      : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
-                  }`}
-                  type="button"
-                  onClick={() => setTimerMinutes(minutes)}
+          {timerMenuOpen && !isTimerRunning && typeof document !== "undefined"
+            ? createPortal(
+                <div
+                  ref={timerMenuRef}
+                  aria-label={`Start Pomodoro for ${task.title}`}
+                  className="fixed z-[75] w-64 rounded-md border border-[var(--border-strong)] bg-[var(--surface)] p-3 text-left shadow-[var(--shadow-float-strong)]"
+                  role="dialog"
+                  style={
+                    timerMenuPosition
+                      ? {
+                          left: timerMenuPosition.left,
+                          top: timerMenuPosition.top,
+                        }
+                      : { left: 0, top: 0, visibility: "hidden" }
+                  }
+                  onClick={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
                 >
-                  {minutes}m
-                </button>
-              ))}
-            </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-bold text-[var(--foreground)]">
+                      Pomodoro length
+                    </p>
+                    <button
+                      aria-label="Close timer options"
+                      className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
+                      type="button"
+                      onClick={() => setTimerMenuOpen(false)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
 
-            <label className="mt-3 flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 text-xs text-[var(--muted)] focus-within:border-[var(--accent)]">
-              <span className="flex-1 font-semibold">Custom</span>
-              <input
-                aria-label="Custom Pomodoro minutes"
-                className="w-12 bg-transparent text-right font-semibold outline-none"
-                max={180}
-                min={5}
-                type="number"
-                value={timerMinutes}
-                onChange={(event) =>
-                  setTimerMinutes(
-                    Math.min(
-                      180,
-                      Math.max(5, Math.round(Number(event.target.value)) || 5),
-                    ),
-                  )
-                }
-              />
-              <span className="pl-1">min</span>
-            </label>
+                  <div className="mt-3 grid grid-cols-3 gap-1.5">
+                    {[5, 10, 15, 25, 45, 60].map((minutes) => (
+                      <button
+                        key={minutes}
+                        aria-pressed={timerMinutes === minutes}
+                        className={`h-8 rounded-md border text-xs font-semibold transition ${
+                          timerMinutes === minutes
+                            ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--danger)]"
+                            : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--muted)] hover:border-[var(--accent)]"
+                        }`}
+                        type="button"
+                        onClick={() => setTimerMinutes(minutes)}
+                      >
+                        {minutes}m
+                      </button>
+                    ))}
+                  </div>
 
-            <button
-              className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)]"
-              type="button"
-              onClick={() => {
-                onStartTask(task.id, timerMinutes);
-                setTimerMenuOpen(false);
-              }}
-            >
-              <Play size={14} fill="currentColor" aria-hidden="true" />
-              Start {timerMinutes} min
-            </button>
-          </div>
-        ) : null}
+                  <label className="mt-3 flex h-9 items-center rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 text-xs text-[var(--muted)] focus-within:border-[var(--accent)]">
+                    <span className="flex-1 font-semibold">Custom</span>
+                    <input
+                      aria-label="Custom Pomodoro minutes"
+                      className="w-12 bg-transparent text-right font-semibold outline-none"
+                      max={180}
+                      min={5}
+                      type="number"
+                      value={timerMinutes}
+                      onChange={(event) =>
+                        setTimerMinutes(
+                          Math.min(
+                            180,
+                            Math.max(
+                              5,
+                              Math.round(Number(event.target.value)) || 5,
+                            ),
+                          ),
+                        )
+                      }
+                    />
+                    <span className="pl-1">min</span>
+                  </label>
+
+                  <button
+                    className="mt-3 flex h-9 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)]"
+                    type="button"
+                    onClick={() => {
+                      onStartTask(task.id, timerMinutes);
+                      setTimerMenuOpen(false);
+                    }}
+                  >
+                    <Play size={14} fill="currentColor" aria-hidden="true" />
+                    Start {timerMinutes} min
+                  </button>
+                </div>,
+                document.body,
+              )
+            : null}
       </div>
     </article>
   );
