@@ -222,6 +222,8 @@ type StoredState = {
   selectedTaskId: string;
   focusTaskId?: string;
   onboardingCompleted?: boolean;
+  sourceTabId?: string;
+  updatedAt?: string;
 };
 
 const STORAGE_KEY = "tockli.mvp.v1";
@@ -963,10 +965,12 @@ function mapRemoteSettings(row?: RemoteSettingsRow | null): UserSettings {
     breakMinutes: row.break_minutes ?? initialSettings.breakMinutes,
     dailyPomodoroGoal: row.daily_pomodoro_goal ?? initialSettings.dailyPomodoroGoal,
     focusMinutes: row.focus_minutes ?? initialSettings.focusMinutes,
+    focusVolume: row.focus_volume ?? initialSettings.focusVolume,
     focusSound: row.focus_sound ?? initialSettings.focusSound,
     showNextUp: row.show_next_up ?? initialSettings.showNextUp,
     soundEnabled: row.sound_enabled ?? initialSettings.soundEnabled,
     strictMode: row.strict_mode ?? initialSettings.strictMode,
+    themeMode: row.theme_mode ?? initialSettings.themeMode,
     workingDays: row.working_days ?? initialSettings.workingDays,
   });
 }
@@ -992,9 +996,11 @@ function mapSettingsForRemote(userId: string, settings: UserSettings) {
       initialSettings.focusMinutes,
     ),
     focus_sound: normalizeFocusSound(settings.focusSound),
+    focus_volume: normalizeVolume(settings.focusVolume),
     show_next_up: settings.showNextUp,
     sound_enabled: settings.soundEnabled,
     strict_mode: settings.strictMode,
+    theme_mode: normalizeThemeMode(settings.themeMode),
     updated_at: new Date().toISOString(),
     user_id: userId,
     working_days: settings.workingDays.filter((day) => weekdays.includes(day)),
@@ -1114,6 +1120,23 @@ function storedStateToWorkspace(parsed: StoredState): WorkspaceSnapshot {
   };
 }
 
+function workspaceToStoredState(
+  snapshot: WorkspaceSnapshot,
+): Omit<StoredState, "sourceTabId" | "updatedAt"> {
+  return {
+    activeProjectId: snapshot.activeProjectId,
+    cancellations: snapshot.cancellations,
+    categories: snapshot.categories,
+    focusTaskId: snapshot.focusTaskId,
+    onboardingCompleted: true,
+    projects: snapshot.projects,
+    selectedTaskId: snapshot.selectedTaskId,
+    sessions: snapshot.sessions,
+    settings: snapshot.settings,
+    tasks: snapshot.tasks,
+  };
+}
+
 async function loadRemoteWorkspaceSnapshot(
   authUser: User,
   preferredProjectId?: string,
@@ -1175,7 +1198,7 @@ async function loadRemoteWorkspaceSnapshot(
     const { data: settingsData } = await supabase
       .from("user_settings")
       .select(
-        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,show_next_up",
+        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,focus_volume,show_next_up,theme_mode",
       )
       .eq("user_id", authUser.id)
       .maybeSingle();
@@ -1248,7 +1271,7 @@ async function loadRemoteWorkspaceSnapshot(
     supabase
       .from("user_settings")
       .select(
-        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,show_next_up",
+        "focus_minutes,break_minutes,daily_pomodoro_goal,working_days,strict_mode,sound_enabled,focus_sound,focus_volume,show_next_up,theme_mode",
       )
       .eq("user_id", authUser.id)
       .maybeSingle(),
@@ -1543,7 +1566,9 @@ type RemoteSettingsRow = {
   strict_mode?: boolean | null;
   sound_enabled?: boolean | null;
   focus_sound?: FocusSound | null;
+  focus_volume?: number | null;
   show_next_up?: boolean | null;
+  theme_mode?: ThemeMode | null;
 };
 
 type WorkspaceSnapshot = {
@@ -1637,6 +1662,13 @@ export default function Home() {
   const timerDeadlineRef = useRef<number | null>(null);
   const timerCompletionHandledRef = useRef(false);
   const lastRemoteSyncJsonRef = useRef("");
+  const tabIdRef = useRef(createId("tab"));
+  const lastAppliedStorageUpdatedAtRef = useRef("");
+  const lastLocalStorageWorkspaceJsonRef = useRef("");
+  const fullRemoteSyncNeededRef = useRef(false);
+  const dirtyProjectIdsRef = useRef(new Set<string>());
+  const dirtyCategoryIdsRef = useRef(new Set<string>());
+  const dirtyTaskIdsRef = useRef(new Set<string>());
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -1670,14 +1702,14 @@ export default function Home() {
       const { data, error } = await supabase!.auth.getSession();
 
       if (!alive) {
-      return;
-    }
+        return;
+      }
 
       if (error) {
         setAuthMessage(error.message);
         setAuthReady(true);
-      return;
-    }
+        return;
+      }
 
       if (!data.session) {
         const nextPath = `${window.location.pathname}${window.location.search}`;
@@ -1686,8 +1718,8 @@ export default function Home() {
             nextPath,
           )}&message=Please%20log%20in%20to%20open%20Tockli.`,
         );
-      return;
-    }
+        return;
+      }
 
       setAuthUser(data.session.user);
       setAuthReady(true);
@@ -1724,22 +1756,34 @@ export default function Home() {
 
   const storageKey = authUser ? `${STORAGE_KEY}:${authUser.id}` : STORAGE_KEY;
 
-  const applyWorkspaceSnapshot = useCallback((snapshot: WorkspaceSnapshot) => {
-    const normalizedSettings = normalizeSettings(snapshot.settings);
-    setProjects(snapshot.projects);
-    setCategories(snapshot.categories);
-    setTasks(snapshot.tasks);
-    setSessions(snapshot.sessions);
-    setCancellations(snapshot.cancellations);
-    setSettings(normalizedSettings);
-    setActiveProjectId(snapshot.activeProjectId);
-    setSelectedTaskId(snapshot.selectedTaskId);
-    setFocusTaskId(snapshot.focusTaskId);
-    setRemainingSeconds(normalizedSettings.focusMinutes * 60);
-    setSessionDurationMinutes(normalizedSettings.focusMinutes);
-    setOnboardingOpen(false);
-    setHydrated(true);
-  }, []);
+  const applyWorkspaceSnapshot = useCallback(
+    (
+      snapshot: WorkspaceSnapshot,
+      options?: { preserveTimer?: boolean; requireFullRemoteSync?: boolean },
+    ) => {
+      const normalizedSettings = normalizeSettings(snapshot.settings);
+      dirtyProjectIdsRef.current.clear();
+      dirtyCategoryIdsRef.current.clear();
+      dirtyTaskIdsRef.current.clear();
+      fullRemoteSyncNeededRef.current = Boolean(options?.requireFullRemoteSync);
+      setProjects(snapshot.projects);
+      setCategories(snapshot.categories);
+      setTasks(snapshot.tasks);
+      setSessions(snapshot.sessions);
+      setCancellations(snapshot.cancellations);
+      setSettings(normalizedSettings);
+      setActiveProjectId(snapshot.activeProjectId);
+      setSelectedTaskId(snapshot.selectedTaskId);
+      if (!options?.preserveTimer) {
+        setFocusTaskId(snapshot.focusTaskId);
+        setRemainingSeconds(normalizedSettings.focusMinutes * 60);
+        setSessionDurationMinutes(normalizedSettings.focusMinutes);
+      }
+      setOnboardingOpen(false);
+      setHydrated(true);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!authReady || (isSupabaseConfigured && !authUser)) {
@@ -1806,15 +1850,21 @@ export default function Home() {
           );
 
           if (shouldMigrateLocalWorkspace && storedWorkspace) {
-            applyWorkspaceSnapshot(storedWorkspace.workspace);
+            applyWorkspaceSnapshot(storedWorkspace.workspace, {
+              requireFullRemoteSync: true,
+            });
             if (storedWorkspace.legacyStored) {
+              const updatedAt = new Date().toISOString();
               window.localStorage.setItem(
                 storageKey,
                 JSON.stringify({
                   ...storedWorkspace.parsed,
                   onboardingCompleted: true,
+                  sourceTabId: tabIdRef.current,
+                  updatedAt,
                 }),
               );
+              lastAppliedStorageUpdatedAtRef.current = updatedAt;
               window.localStorage.setItem(STORAGE_MIGRATION_KEY, "true");
             }
             return;
@@ -1863,20 +1913,33 @@ export default function Home() {
       return;
     }
 
-    const state: StoredState = {
-      projects,
-      categories,
-      tasks,
-      sessions,
-      cancellations,
-      settings,
+    const state = workspaceToStoredState({
       activeProjectId,
-      selectedTaskId,
+      cancellations,
+      categories,
       focusTaskId,
-      onboardingCompleted: true,
+      projects,
+      selectedTaskId,
+      sessions,
+      settings,
+      tasks,
+    });
+    const workspaceJson = JSON.stringify(state);
+
+    if (workspaceJson === lastLocalStorageWorkspaceJsonRef.current) {
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const storedState: StoredState = {
+      ...state,
+      sourceTabId: tabIdRef.current,
+      updatedAt,
     };
 
-    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    lastAppliedStorageUpdatedAtRef.current = updatedAt;
+    lastLocalStorageWorkspaceJsonRef.current = workspaceJson;
+    window.localStorage.setItem(storageKey, JSON.stringify(storedState));
     window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   }, [
     activeProjectId,
@@ -1891,6 +1954,50 @@ export default function Home() {
     storageKey,
     tasks,
   ]);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+
+    function handleStorage(event: StorageEvent) {
+      if (event.key !== storageKey || !event.newValue) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(event.newValue) as StoredState;
+
+        if (parsed.sourceTabId === tabIdRef.current) {
+          return;
+        }
+
+        if (
+          parsed.updatedAt &&
+          lastAppliedStorageUpdatedAtRef.current &&
+          parsed.updatedAt <= lastAppliedStorageUpdatedAtRef.current
+        ) {
+          return;
+        }
+
+        const workspace = storedStateToWorkspace(parsed);
+        lastAppliedStorageUpdatedAtRef.current =
+          parsed.updatedAt ?? new Date().toISOString();
+        const appliedWorkspace = isRunning
+          ? { ...workspace, focusTaskId }
+          : workspace;
+        lastLocalStorageWorkspaceJsonRef.current = JSON.stringify(
+          workspaceToStoredState(appliedWorkspace),
+        );
+        applyWorkspaceSnapshot(workspace, { preserveTimer: isRunning });
+      } catch {
+        setProjectNotice("Another Tockli tab sent state this tab could not read.");
+      }
+    }
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [applyWorkspaceSnapshot, focusTaskId, hydrated, isRunning, storageKey]);
 
   useEffect(() => {
     if (!hydrated || !supabase || !authUser || !projects.length) {
@@ -1928,11 +2035,20 @@ export default function Home() {
         const commentIdMap = new Map<string, string>();
         const sessionIdMap = new Map<string, string>();
         const cancellationIdMap = new Map<string, string>();
-        const editableLocalProjectIds = new Set(
+        const ownedLocalProjectIds = new Set(
           projects
             .filter((project) => project.currentUserRole === "owner")
             .map((project) => project.id),
         );
+        const editableLocalProjectIds = new Set(
+          projects
+            .filter((project) => project.currentUserRole !== "viewer")
+            .map((project) => project.id),
+        );
+        const dirtyProjectIds = new Set(dirtyProjectIdsRef.current);
+        const dirtyCategoryIds = new Set(dirtyCategoryIdsRef.current);
+        const dirtyTaskIds = new Set(dirtyTaskIdsRef.current);
+        const shouldSyncAllWorkspace = fullRemoteSyncNeededRef.current;
 
         const profileResult = await supabase!.from("profiles").upsert(
           {
@@ -1956,7 +2072,16 @@ export default function Home() {
         }
 
         for (const project of projects) {
-          if (project.currentUserRole !== "owner") {
+          if (!ownedLocalProjectIds.has(project.id)) {
+            continue;
+          }
+
+          const shouldSyncProject =
+            shouldSyncAllWorkspace ||
+            !isUuid(project.id) ||
+            dirtyProjectIds.has(project.id);
+
+          if (!shouldSyncProject) {
             continue;
           }
 
@@ -2011,6 +2136,16 @@ export default function Home() {
             continue;
           }
 
+          const shouldSyncCategory =
+            shouldSyncAllWorkspace ||
+            !isUuid(category.id) ||
+            dirtyCategoryIds.has(category.id) ||
+            projectIdMap.has(category.projectId);
+
+          if (!shouldSyncCategory) {
+            continue;
+          }
+
           const categoryPayload = {
             color: category.color,
             created_by: syncAuthUser.id,
@@ -2055,6 +2190,17 @@ export default function Home() {
 
           const projectId = remoteProjectId(task.projectId);
           if (!isUuid(projectId)) {
+            continue;
+          }
+
+          const shouldSyncTask =
+            shouldSyncAllWorkspace ||
+            !isUuid(task.id) ||
+            dirtyTaskIds.has(task.id) ||
+            projectIdMap.has(task.projectId) ||
+            Boolean(task.categoryId && categoryIdMap.has(task.categoryId));
+
+          if (!shouldSyncTask) {
             continue;
           }
 
@@ -2374,6 +2520,17 @@ export default function Home() {
           return;
         }
 
+        fullRemoteSyncNeededRef.current = false;
+        dirtyProjectIds.forEach((projectId) => {
+          dirtyProjectIdsRef.current.delete(projectId);
+        });
+        dirtyCategoryIds.forEach((categoryId) => {
+          dirtyCategoryIdsRef.current.delete(categoryId);
+        });
+        dirtyTaskIds.forEach((taskId) => {
+          dirtyTaskIdsRef.current.delete(taskId);
+        });
+
         if (hasMappedIds) {
           setProjects((current) =>
             current.map((project) => ({
@@ -2685,6 +2842,18 @@ export default function Home() {
     return projects.find((project) => project.id === projectId)?.currentUserRole !== "viewer";
   }
 
+  function markProjectDirty(projectId: string) {
+    dirtyProjectIdsRef.current.add(projectId);
+  }
+
+  function markCategoryDirty(categoryId: string) {
+    dirtyCategoryIdsRef.current.add(categoryId);
+  }
+
+  function markTaskDirty(taskId: string) {
+    dirtyTaskIdsRef.current.add(taskId);
+  }
+
   const beginPomodoroTimer = useCallback((durationMinutes: number) => {
     const durationSeconds = durationMinutes * 60;
     timerDeadlineRef.current = Date.now() + durationSeconds * 1000;
@@ -2714,6 +2883,7 @@ export default function Home() {
       );
       const session: FocusSession = {
         id: createId("session"),
+        userId: appUserId,
         projectId: sessionProjectId,
         taskId: completedTask?.id ?? null,
         minutes,
@@ -2735,6 +2905,7 @@ export default function Home() {
           ?.currentUserRole !== "viewer";
 
       if (completedTask && canUpdateCompletedTask) {
+        dirtyTaskIdsRef.current.add(completedTask.id);
         setTasks((current) =>
           current.map((task) =>
             task.id === completedTask.id
@@ -2758,6 +2929,7 @@ export default function Home() {
     },
     [
       activeProjectId,
+      appUserId,
       clearPomodoroDeadline,
       focusTask,
       projects,
@@ -2888,6 +3060,7 @@ export default function Home() {
       due: "",
     };
 
+    markTaskDirty(task.id);
     setTasks((current) => [task, ...current]);
     setSelectedTaskId(task.id);
     setTaskDrawerOpen(true);
@@ -2915,6 +3088,7 @@ export default function Home() {
     setTasks((current) =>
       current.map((task) => (task.id === taskId ? { ...task, status } : task)),
     );
+    markTaskDirty(taskId);
 
     if (task?.status !== status) {
       trackEvent("task_status_changed", {
@@ -2954,6 +3128,7 @@ export default function Home() {
           : project,
       ),
     );
+    markProjectDirty(activeProjectId);
   }
 
   function addBoardColumn(title: string) {
@@ -2979,6 +3154,7 @@ export default function Home() {
           : project,
       ),
     );
+    markProjectDirty(activeProjectId);
     trackEvent("board_column_created", {
       project_kind: activeProject?.kind ?? "unknown",
     });
@@ -3012,6 +3188,7 @@ export default function Home() {
         return { ...project, columns };
       }),
     );
+    markProjectDirty(activeProjectId);
   }
 
   function archiveBoardColumn(columnId: string) {
@@ -3041,6 +3218,7 @@ export default function Home() {
           : item,
       ),
     );
+    markProjectDirty(activeProjectId);
   }
 
   function restoreBoardColumn(columnId: string) {
@@ -3062,6 +3240,7 @@ export default function Home() {
           : project,
       ),
     );
+    markProjectDirty(activeProjectId);
   }
 
   function deleteBoardColumn(columnId: string) {
@@ -3109,6 +3288,12 @@ export default function Home() {
     const remainingColumns = project.columns
       .filter((column) => column.id !== columnId)
       .map((column) => remainingColumnById.get(column.id) ?? column);
+    const movedTaskIds = tasks
+      .filter(
+        (task) =>
+          task.projectId === activeProjectId && task.status === columnId,
+      )
+      .map((task) => task.id);
 
     setProjects((current) =>
       current.map((item) =>
@@ -3124,11 +3309,10 @@ export default function Home() {
           : task,
       ),
     );
+    markProjectDirty(activeProjectId);
+    movedTaskIds.forEach(markTaskDirty);
     trackEvent("board_column_deleted", {
-      moved_tasks: tasks.filter(
-        (task) =>
-          task.projectId === activeProjectId && task.status === columnId,
-      ).length,
+      moved_tasks: movedTaskIds.length,
       project_kind: project.kind,
     });
   }
@@ -3144,6 +3328,7 @@ export default function Home() {
       return;
     }
 
+    markTaskDirty(taskId);
     setTasks((current) =>
       current.map((task) =>
         task.id === taskId
@@ -3208,6 +3393,7 @@ export default function Home() {
       color,
     };
 
+    markCategoryDirty(category.id);
     setCategories((current) => [...current, category]);
     return category.id;
   }
@@ -3590,6 +3776,7 @@ export default function Home() {
       setProjects((current) =>
         current.map((item) => (item.id === finalProject.id ? finalProject : item)),
       );
+      markProjectDirty(finalProject.id);
       setActiveProjectId(finalProject.id);
       setProjectDialog(null);
       trackEvent("project_updated", {
@@ -3650,17 +3837,17 @@ export default function Home() {
       ...project,
       pendingInvites: newInvites,
     };
+    const defaultCategory: TaskCategory = {
+      id: createId("category"),
+      projectId: project.id,
+      name: values.kind === "team" ? "Shared" : "Focus",
+      color: project.color,
+    };
 
     setProjects((current) => [...current, project]);
-    setCategories((current) => [
-      ...current,
-      {
-        id: createId("category"),
-        projectId: project.id,
-        name: values.kind === "team" ? "Shared" : "Focus",
-        color: project.color,
-      },
-    ]);
+    markProjectDirty(project.id);
+    markCategoryDirty(defaultCategory.id);
+    setCategories((current) => [...current, defaultCategory]);
     setActiveProjectId(project.id);
     setSelectedTags([]);
     setTaskDrawerOpen(false);
@@ -3834,6 +4021,7 @@ export default function Home() {
     );
     const cancellation: PomodoroCancellation = {
       id: createId("cancellation"),
+      userId: appUserId,
       projectId,
       taskId: task?.id ?? null,
       durationMinutes: sessionDurationMinutes,
