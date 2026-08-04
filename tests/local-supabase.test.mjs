@@ -167,13 +167,19 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   );
 
   const bootstrappedSettings = await sql`
-    select user_id, sound_enabled
+    select user_id, sound_enabled, focus_volume, theme_mode
     from public.user_settings
     where user_id in ${sql(testUserIds)}
   `;
   assert.equal(bootstrappedSettings.length, 4);
   assert.ok(
     bootstrappedSettings.every((settings) => settings.sound_enabled === true),
+  );
+  assert.ok(
+    bootstrappedSettings.every((settings) => settings.focus_volume === 50),
+  );
+  assert.ok(
+    bootstrappedSettings.every((settings) => settings.theme_mode === "light"),
   );
 
   const [ownerSettings] = await withAuthenticatedUser(ownerId, async (tx) => {
@@ -183,14 +189,18 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
         focus_minutes = 5,
         daily_pomodoro_goal = 6,
         sound_enabled = true,
-        focus_sound = 'ocean_waves'
+        focus_sound = 'ocean_waves',
+        focus_volume = 65,
+        theme_mode = 'dark'
       where user_id = ${ownerId}
-      returning focus_minutes, daily_pomodoro_goal, focus_sound
+      returning focus_minutes, daily_pomodoro_goal, focus_sound, focus_volume, theme_mode
     `;
   });
   assert.equal(ownerSettings.focus_minutes, 5);
   assert.equal(ownerSettings.daily_pomodoro_goal, 6);
   assert.equal(ownerSettings.focus_sound, "ocean_waves");
+  assert.equal(ownerSettings.focus_volume, 65);
+  assert.equal(ownerSettings.theme_mode, "dark");
 
   const collaboratorVisibleOwnerSettings = await withAuthenticatedUser(
     collaboratorId,

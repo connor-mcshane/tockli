@@ -287,7 +287,9 @@ insert into public.user_settings (
   strict_mode,
   sound_enabled,
   focus_sound,
-  show_next_up
+  focus_volume,
+  show_next_up,
+  theme_mode
 )
 values
   (
@@ -299,7 +301,9 @@ values
     false,
     true,
     'brown_noise',
-    false
+    50,
+    false,
+    'light'
   )
 on conflict (user_id) do update
 set
@@ -310,5 +314,7 @@ set
   strict_mode = excluded.strict_mode,
   sound_enabled = excluded.sound_enabled,
   focus_sound = excluded.focus_sound,
+  focus_volume = excluded.focus_volume,
   show_next_up = excluded.show_next_up,
+  theme_mode = excluded.theme_mode,
   updated_at = now();

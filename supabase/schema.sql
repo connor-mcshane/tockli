@@ -184,7 +184,9 @@ create table public.user_settings (
   strict_mode boolean not null default false,
   sound_enabled boolean not null default true,
   focus_sound public.focus_sound not null default 'brown_noise',
+  focus_volume integer not null default 50 check (focus_volume between 0 and 100),
   show_next_up boolean not null default false,
+  theme_mode text not null default 'light' check (theme_mode in ('light', 'dark')),
   updated_at timestamptz not null default now()
 );
 
