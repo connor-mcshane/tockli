@@ -18,6 +18,7 @@ env:
 jobs:
   validate:
     name: Validate
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -60,7 +61,14 @@ jobs:
   deploy:
     name: Deploy to Netlify
     needs: validate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Manual runs are deploy-only. Pushes still require the validation job.
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'push' && needs.validate.result == 'success') ||
+        github.event_name == 'workflow_dispatch'
+      )
     runs-on: ubuntu-latest
     env:
       NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
