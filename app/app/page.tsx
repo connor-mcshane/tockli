@@ -51,6 +51,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { trackEvent } from "@/lib/analytics";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import {
+  buildRecentActivityDates,
+  resolveActiveProjectId,
+  taskMatchesSearch,
+} from "@/lib/workspace-ui.mjs";
 
 type View = "board" | "timer" | "analytics" | "settings";
 type PlanTier = "free" | "pro";
@@ -585,6 +590,15 @@ const navItems: Array<{ id: View; label: string; icon: typeof FolderKanban }> = 
 ];
 
 const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const weekdayLabels: Record<string, string> = {
+  Fri: "Friday",
+  Mon: "Monday",
+  Sat: "Saturday",
+  Sun: "Sunday",
+  Thu: "Thursday",
+  Tue: "Tuesday",
+  Wed: "Wednesday",
+};
 
 function isoDate(offsetDays = 0) {
   const date = new Date();
@@ -1326,10 +1340,7 @@ async function loadRemoteWorkspaceSnapshot(
   const cancellations = (
     (cancellationResult.data ?? []) as RemoteCancellationRow[]
   ).map(mapRemoteCancellation);
-  const activeProjectId =
-    preferredProjectId && projects.some((project) => project.id === preferredProjectId)
-      ? preferredProjectId
-      : projects[0]?.id ?? "";
+  const activeProjectId = resolveActiveProjectId(projects, preferredProjectId);
   const firstOpenTask =
     tasks.find((task) => task.projectId === activeProjectId && task.status !== "done") ??
     tasks.find((task) => task.projectId === activeProjectId) ??
@@ -1651,6 +1662,8 @@ export default function Home() {
   const [projectNotice, setProjectNotice] = useState("");
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sessionNote, setSessionNote] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [sessionDurationMinutes, setSessionDurationMinutes] = useState(
@@ -1828,7 +1841,10 @@ export default function Home() {
 
         if (supabase && authUser) {
           const { error, plan, snapshot: remoteWorkspace } =
-            await loadRemoteWorkspaceSnapshot(authUser);
+            await loadRemoteWorkspaceSnapshot(
+              authUser,
+              storedWorkspace?.workspace.activeProjectId,
+            );
 
           if (!alive) {
             return;
@@ -1896,6 +1912,17 @@ export default function Home() {
           return;
         }
 
+        applyWorkspaceSnapshot({
+          activeProjectId: "",
+          cancellations: [],
+          categories: [],
+          focusTaskId: "",
+          projects: [],
+          selectedTaskId: "",
+          sessions: [],
+          settings: initialSettings,
+          tasks: [],
+        });
         setOnboardingOpen(!inviteToken || onboardingRequested);
       }
 
@@ -1907,6 +1934,31 @@ export default function Home() {
       window.cancelAnimationFrame(frame);
     };
   }, [applyWorkspaceSnapshot, authReady, authUser, storageKey]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) {
+      return;
+    }
+
+    function closeMobileMenu(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setMobileMenuOpen(false);
+      }
+    }
+
+    function closeMobileMenuAtDesktopWidth() {
+      if (window.innerWidth >= 1024) {
+        setMobileMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", closeMobileMenu);
+    window.addEventListener("resize", closeMobileMenuAtDesktopWidth);
+    return () => {
+      window.removeEventListener("keydown", closeMobileMenu);
+      window.removeEventListener("resize", closeMobileMenuAtDesktopWidth);
+    };
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     if (!hydrated) {
@@ -2812,14 +2864,21 @@ export default function Home() {
   );
 
   const filteredProjectTasks = useMemo(() => {
-    if (!selectedTags.length) {
-      return projectTasks;
-    }
+    return projectTasks.filter((task) => {
+      const matchesTags =
+        !selectedTags.length ||
+        selectedTags.some((tag) =>
+          task.tags.map(normalizeTag).includes(tag),
+        );
+      const categoryName = activeProjectCategories.find(
+        (category) => category.id === task.categoryId,
+      )?.name;
 
-    return projectTasks.filter((task) =>
-      selectedTags.some((tag) => task.tags.map(normalizeTag).includes(tag)),
-    );
-  }, [projectTasks, selectedTags]);
+      return (
+        matchesTags && taskMatchesSearch(task, taskSearchQuery, categoryName)
+      );
+    });
+  }, [activeProjectCategories, projectTasks, selectedTags, taskSearchQuery]);
 
   const selectedTask = useMemo(
     () =>
@@ -4301,11 +4360,180 @@ export default function Home() {
     );
   }
 
+  if (!hydrated) {
+    return (
+      <main
+        className="flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--foreground)]"
+        data-theme={settings.themeMode}
+      >
+        <section
+          aria-live="polite"
+          className="w-full max-w-sm rounded-lg border border-[var(--border)] bg-[var(--surface)] p-6 text-center shadow-[var(--shadow-card)]"
+        >
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-md bg-[var(--accent-soft)] text-[var(--accent)]">
+            <FolderKanban size={22} aria-hidden="true" />
+          </div>
+          <h1 className="mt-5 text-xl font-semibold">Loading your workspace</h1>
+          <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+            Your projects and tasks will appear once they are ready.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main
       className="min-h-screen bg-[var(--background)] text-[var(--foreground)]"
       data-theme={settings.themeMode}
     >
+      {mobileMenuOpen ? (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <button
+            aria-label="Close menu"
+            className="absolute inset-0 bg-[var(--overlay)]"
+            type="button"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <aside
+            aria-label="Project and workspace navigation"
+            aria-modal="true"
+            className="relative flex h-full w-[min(88vw,320px)] flex-col border-r border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-modal)]"
+            id="mobile-navigation"
+            role="dialog"
+          >
+            <div className="flex items-center justify-between border-b border-[var(--border)] p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-md bg-[var(--accent)] text-white">
+                  <TimerReset size={20} aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="text-lg font-semibold">Tockli</p>
+                  <p className="text-xs text-[var(--muted)]">
+                    {planLabels[profilePlan]} plan
+                  </p>
+                </div>
+              </div>
+              <button
+                aria-label="Close menu"
+                className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)]"
+                type="button"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                <X size={18} aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <label className="flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--muted)]">
+                <Search size={16} aria-hidden="true" />
+                <span className="sr-only">Search tasks</span>
+                <input
+                  aria-label="Search tasks"
+                  className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-[var(--subtle)]"
+                  placeholder="Search tasks"
+                  type="search"
+                  value={taskSearchQuery}
+                  onChange={(event) => setTaskSearchQuery(event.target.value)}
+                />
+              </label>
+
+              <div className="mb-6 mt-6">
+                <div className="mb-2 flex items-center justify-between px-2 text-xs font-semibold uppercase text-[var(--muted)]">
+                  <span>Projects</span>
+                  <button
+                    aria-label="Create personal project"
+                    title="Create personal project"
+                    className="rounded p-1 text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      openCreateProjectDialog("personal");
+                    }}
+                  >
+                    <Plus size={16} aria-hidden="true" />
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  {projects.map((project) => (
+                    <div
+                      key={project.id}
+                      className={`group flex w-full items-center gap-1 rounded-md text-sm transition ${
+                        activeProjectId === project.id
+                          ? "bg-[var(--surface-hover)] text-[var(--foreground)]"
+                          : "text-[var(--muted)] hover:bg-[var(--surface-soft)]"
+                      }`}
+                    >
+                      <button
+                        className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left"
+                        type="button"
+                        onClick={() => {
+                          setActiveProjectId(project.id);
+                          setSelectedTags([]);
+                          setTaskDrawerOpen(false);
+                          setMobileMenuOpen(false);
+                        }}
+                      >
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ background: project.color }}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {project.name}
+                        </span>
+                        {project.kind === "team" ? (
+                          <Users className="shrink-0" size={15} aria-hidden="true" />
+                        ) : null}
+                      </button>
+                      <button
+                        aria-label={`Manage ${project.name}`}
+                        title={`Manage ${project.name}`}
+                        className="mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded text-[var(--muted)] transition enabled:hover:bg-[var(--surface)] enabled:hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-30"
+                        disabled={project.currentUserRole !== "owner"}
+                        type="button"
+                        onClick={() => {
+                          setMobileMenuOpen(false);
+                          openEditProjectDialog(project.id);
+                        }}
+                      >
+                        <MoreHorizontal size={16} aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <nav aria-label="Workspace views" className="space-y-1">
+                {navItems.map((item) => {
+                  const Icon = item.icon;
+                  const active = item.id === view;
+
+                  return (
+                    <button
+                      key={item.id}
+                      aria-current={active ? "page" : undefined}
+                      className={`flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-2 text-sm transition ${
+                        active
+                          ? "border-[var(--accent)] bg-[var(--surface-hover)] text-[var(--foreground)]"
+                          : "border-transparent text-[var(--muted)] hover:bg-[var(--surface-soft)]"
+                      }`}
+                      type="button"
+                      onClick={() => {
+                        setView(item.id);
+                        setMobileMenuOpen(false);
+                      }}
+                    >
+                      <Icon size={18} aria-hidden="true" />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+          </aside>
+        </div>
+      ) : null}
       <div className="flex min-h-screen">
         <aside className="hidden w-[280px] shrink-0 border-r border-[var(--border)] bg-[var(--surface)] lg:flex lg:flex-col">
           <div className="border-b border-[var(--border)] p-6">
@@ -4423,10 +4651,13 @@ export default function Home() {
             <div className="flex items-center justify-between gap-4">
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <button
-                  aria-label="Open menu"
-                  title="Open menu"
+                  aria-controls="mobile-navigation"
+                  aria-expanded={mobileMenuOpen}
+                  aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+                  title={mobileMenuOpen ? "Close menu" : "Open menu"}
                   className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] text-[var(--muted)] lg:hidden"
                   type="button"
+                  onClick={() => setMobileMenuOpen((current) => !current)}
                 >
                   <Menu size={19} aria-hidden="true" />
                 </button>
@@ -4487,10 +4718,14 @@ export default function Home() {
                 ) : null}
                 <label className="hidden h-9 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--muted)] md:flex">
                   <Search size={16} aria-hidden="true" />
+                  <span className="sr-only">Search tasks</span>
                   <input
+                    aria-label="Search tasks"
                     className="w-44 bg-transparent outline-none placeholder:text-[var(--subtle)]"
                     placeholder="Search tasks"
                     type="search"
+                    value={taskSearchQuery}
+                    onChange={(event) => setTaskSearchQuery(event.target.value)}
                   />
                 </label>
                 {activeProjectCanEdit ? (
@@ -4614,6 +4849,7 @@ export default function Home() {
                   onToggleTag={toggleTag}
                   progressPercent={progressPercent}
                   projectTasks={filteredProjectTasks}
+                  searchQuery={taskSearchQuery}
                   archivedColumns={archivedBoardColumns}
                   selectedTags={selectedTags}
                   selectedTaskId={selectedTask?.id}
@@ -5465,6 +5701,7 @@ function BoardView({
   onToggleTag,
   progressPercent,
   projectTasks,
+  searchQuery,
   selectedTags,
   selectedTaskId,
   todaysPomodoros,
@@ -5491,6 +5728,7 @@ function BoardView({
   onToggleTag: (tag: string) => void;
   progressPercent: number;
   projectTasks: Task[];
+  searchQuery: string;
   selectedTags: string[];
   selectedTaskId?: string;
   todaysPomodoros: number;
@@ -5668,6 +5906,15 @@ function BoardView({
               </button>
             );
           })}
+        </section>
+      ) : null}
+
+      {searchQuery.trim() && !projectTasks.length ? (
+        <section
+          aria-live="polite"
+          className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--muted)]"
+        >
+          No tasks match “{searchQuery.trim()}”.
         </section>
       ) : null}
 
@@ -7331,15 +7578,17 @@ function TimerView({
             </div>
             <div className="flex items-center gap-1">
               {[
-                ["heading", "H"],
-                ["bold", "B"],
-                ["italic", "I"],
-                ["list", "-"],
-                ["check", "[]"],
-                ["quote", ">"],
-              ].map(([kind, label]) => (
+                ["heading", "H", "Heading"],
+                ["bold", "B", "Bold"],
+                ["italic", "I", "Italic"],
+                ["list", "-", "Bulleted list"],
+                ["check", "[]", "Checklist"],
+                ["quote", ">", "Quote"],
+              ].map(([kind, label, accessibleLabel]) => (
                 <button
                   key={kind}
+                  aria-label={accessibleLabel}
+                  title={accessibleLabel}
                   className="h-8 min-w-8 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-xs font-semibold text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                   type="button"
                   onClick={() =>
@@ -7356,6 +7605,7 @@ function TimerView({
               ))}
               <button
                 aria-label={showPreview ? "Hide markdown preview" : "Show markdown preview"}
+                aria-pressed={showPreview}
                 title={showPreview ? "Hide preview" : "Show preview"}
                 className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                 type="button"
@@ -7374,6 +7624,7 @@ function TimerView({
             <MarkdownPreview note={sessionNote} />
           ) : (
             <textarea
+              aria-label="Session notes"
               className="mt-4 min-h-[400px] flex-1 resize-none rounded-md border border-[var(--border)] bg-[var(--surface)] p-5 text-[15px] leading-7 text-[var(--foreground)] outline-none transition placeholder:text-[var(--subtle)] focus:border-[var(--accent)]"
               placeholder={"## Session notes\n- What moved forward?\n- What should I keep in mind next?"}
               value={sessionNote}
@@ -7671,18 +7922,10 @@ function AnalyticsView({
           hour: "numeric",
         })}`;
 
-  const heatmapStart = new Date(today);
-  const mondayOffset = (today.getDay() + 6) % 7;
-  heatmapStart.setDate(heatmapStart.getDate() - (25 * 7 + mondayOffset));
-  const heatmapDays = Array.from({ length: 26 * 7 }, (_, index) => {
-    const day = new Date(heatmapStart);
-    day.setDate(day.getDate() + index);
-    return {
-      date: day,
-      future: day > today,
-      minutes: sessionMinutesByDay.get(dateKey(day)) ?? 0,
-    };
-  });
+  const heatmapDays = buildRecentActivityDates(today).map((day) => ({
+    date: day,
+    minutes: sessionMinutesByDay.get(dateKey(day)) ?? 0,
+  }));
   const heatmapMax = Math.max(1, ...heatmapDays.map((day) => day.minutes));
 
   const cancellationCounts = (
@@ -7961,11 +8204,9 @@ function AnalyticsView({
                   key={dateKey(day.date)}
                   className="h-3 w-3 rounded-[2px]"
                   style={{
-                    backgroundColor: day.future
-                      ? "transparent"
-                      : day.minutes
-                        ? `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`
-                        : "var(--heat-empty)",
+                    backgroundColor: day.minutes
+                      ? `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`
+                      : "var(--heat-empty)",
                   }}
                   title={`${day.date.toLocaleDateString("en", {
                     month: "short",
@@ -8325,6 +8566,9 @@ function SettingsView({
               return (
                 <button
                   key={day}
+                  aria-label={weekdayLabels[day] ?? day}
+                  aria-pressed={active}
+                  title={weekdayLabels[day] ?? day}
                   className={`h-11 w-12 rounded-md border text-sm font-semibold transition ${
                     active
                       ? "border-[var(--accent)] bg-[var(--accent)] text-white"
