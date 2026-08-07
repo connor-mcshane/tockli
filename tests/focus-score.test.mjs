@@ -171,10 +171,36 @@ test("dropping the task component redistributes its weight instead of scoring ze
   assert.equal(unavailable.score, 100);
   assert.equal(unavailable.components.length, 3);
   assert.equal(unavailable.totals.completedTasks, null);
+  assert.equal(
+    unavailable.components.reduce((total, component) => total + component.possible, 0),
+    100,
+  );
 
   assert.equal(noneFinished.score, 80);
   assert.equal(noneFinished.components.length, 4);
   assert.equal(noneFinished.biggestOpportunity.id, "completion");
+});
+
+test("the score reconciles exactly to the displayed component points", () => {
+  const result = calculateFocusScore({
+    now: NOW,
+    settings,
+    sessions: sessionsOn([3, 4, 5], 2),
+    cancellations: [{ cancelledAt: at(3, 15) }],
+    completedTasks: null,
+  });
+
+  assert.equal(
+    result.components.reduce((total, component) => total + component.possible, 0),
+    100,
+  );
+  assert.equal(
+    result.components.reduce((total, component) => total + component.earned, 0),
+    result.score,
+  );
+  for (const component of result.components) {
+    assert.equal(component.earned + component.lost, component.possible);
+  }
 });
 
 test("finishing one card per working day earns full completion marks", () => {
