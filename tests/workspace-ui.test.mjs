@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   buildRecentActivityDates,
+  moveTaskWithCompletion,
   resolveActiveProjectId,
+  taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "../lib/workspace-ui.mjs";
 
@@ -38,4 +40,46 @@ test("activity dates are Monday-aligned and never include future days", () => {
   assert.deepEqual(dates.at(-1), new Date(2026, 7, 5));
   assert.equal(dates.some((date) => date > today), false);
   assert.equal(dates.length, 178);
+});
+
+test("task completion timestamps follow the project's done column", () => {
+  const completedAt = "2026-08-07T12:00:00.000Z";
+  const columns = [
+    { id: "todo" },
+    { id: "shipped", isDone: true },
+  ];
+  const task = { id: "task-1", status: "todo", completedAt: null };
+
+  const completed = moveTaskWithCompletion(task, "shipped", columns, completedAt);
+  assert.equal(completed.completedAt, completedAt);
+
+  const stillCompleted = moveTaskWithCompletion(
+    completed,
+    "shipped",
+    columns,
+    "2026-08-08T12:00:00.000Z",
+  );
+  assert.equal(stillCompleted.completedAt, completedAt);
+
+  const reopened = moveTaskWithCompletion(completed, "todo", columns);
+  assert.equal(reopened.completedAt, null);
+});
+
+test("deleting a reordered done column dirties moved and newly completed tasks", () => {
+  const tasks = [
+    { id: "moved", projectId: "project-1", status: "done" },
+    { id: "fallback", projectId: "project-1", status: "active" },
+    { id: "newly-done", projectId: "project-1", status: "backlog" },
+    { id: "other-project", projectId: "project-2", status: "backlog" },
+  ];
+
+  assert.deepEqual(
+    taskIdsAffectedByColumnDeletion(
+      tasks,
+      "project-1",
+      "done",
+      "backlog",
+    ),
+    ["moved", "newly-done"],
+  );
 });

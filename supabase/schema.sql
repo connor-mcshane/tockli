@@ -120,6 +120,7 @@ create table public.tasks (
   due_label text,
   sort_order integer not null default 0,
   created_by uuid not null references public.profiles(id) on delete cascade,
+  completed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -199,6 +200,8 @@ on public.project_invitations(project_id, lower(invited_email))
 where status = 'pending';
 create index task_categories_project_id_idx on public.task_categories(project_id);
 create index tasks_project_id_status_idx on public.tasks(project_id, status);
+create index tasks_project_completed_idx on public.tasks(project_id, completed_at desc)
+where completed_at is not null;
 create index task_subtasks_task_id_idx on public.task_subtasks(task_id);
 create index task_comments_task_created_idx on public.task_comments(task_id, created_at);
 create index focus_sessions_user_completed_idx on public.focus_sessions(user_id, completed_at desc);
@@ -353,6 +356,46 @@ $$;
 create trigger project_members_enforce_roles
 before insert or update of user_id, role on public.project_members
 for each row execute function public.enforce_project_member_roles();
+
+create or replace function public.sync_task_completed_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  status_is_done boolean;
+begin
+  select coalesce(
+    bool_or(
+      board_column ->> 'id' = new.status
+      and board_column ->> 'isDone' = 'true'
+    ),
+    false
+  ) or new.status = 'done'
+  into status_is_done
+  from public.projects p
+  left join lateral jsonb_array_elements(p.board_columns) board_column on true
+  where p.id = new.project_id;
+
+  if status_is_done then
+    if new.completed_at is null then
+      if tg_op = 'UPDATE' then
+        new.completed_at := coalesce(old.completed_at, now());
+      else
+        new.completed_at := now();
+      end if;
+    end if;
+  else
+    new.completed_at := null;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger tasks_sync_completed_at
+before insert or update of project_id, status, completed_at on public.tasks
+for each row execute function public.sync_task_completed_at();
 
 create or replace function public.accept_project_invite(invite_token text)
 returns table (
