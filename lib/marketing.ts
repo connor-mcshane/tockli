@@ -1,4 +1,4 @@
-const fallbackSiteUrl = "https://tockli.app";
+const fallbackSiteUrl = "https://tockli.com";
 
 function resolveSiteUrl(value: string | undefined) {
   const candidate = value?.trim() || fallbackSiteUrl;
@@ -14,7 +14,7 @@ export const siteConfig = {
   name: "Tockli",
   url: resolveSiteUrl(process.env.NEXT_PUBLIC_SITE_URL),
   description:
-    "A calm focus timer with a task board, session notes, lightweight sharing, and practical analytics.",
+    "Tockli is a task board with a focus timer built in. Run focus sessions, finish cards, and find out your focus score.",
   ogImage: "/og.png",
 };
 
