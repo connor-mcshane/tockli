@@ -30,7 +30,25 @@ export type TockliEventName =
   | "project_deleted"
   | "onboarding_completed"
   | "project_invite_accepted"
-  | "settings_updated";
+  | "settings_updated"
+  | "session_goal_set"
+  | "focus_score_viewed"
+  | "focus_score_unlocked"
+  | "focus_score_estimated"
+  | "streak_extended"
+  | "streak_broken"
+  | "streak_freeze_used"
+  | "daily_goal_met"
+  | "nudge_shown"
+  | "nudge_clicked"
+  | "weekly_recap_opened"
+  | "paywall_viewed"
+  | "upgrade_clicked"
+  | "checkout_started"
+  | "checkout_completed"
+  | "ai_insight_generated"
+  | "ai_insight_viewed"
+  | "ai_insight_rated";
 
 export type AnalyticsProperties = Record<
   string,
