@@ -81,6 +81,8 @@ Optional launch/runtime keys:
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
+NEXT_PUBLIC_POSTHOG_KEY=
+NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
@@ -153,6 +155,8 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 INVITE_FROM_EMAIL=
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
+NEXT_PUBLIC_POSTHOG_KEY=
+NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
@@ -161,6 +165,10 @@ The `NEXT_PUBLIC_*` values are browser-visible by design, so keep them as
 GitHub variables and let the workflow sync them into Netlify as non-secret
 production environment variables. Keep `SUPABASE_SERVICE_ROLE_KEY` and
 `RESEND_API_KEY` as secrets.
+
+The PostHog project key is intentionally public. Create the project in PostHog's
+EU region and copy its project API key into `NEXT_PUBLIC_POSTHOG_KEY`. Analytics
+is disabled until a visitor explicitly opts in through the in-app preferences.
 
 Netlify production also needs the server-only `SUPABASE_SERVICE_ROLE_KEY` for
 project invite creation and delivery. Add `RESEND_API_KEY` and

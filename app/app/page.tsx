@@ -1771,10 +1771,6 @@ export default function Home() {
     };
   }, []);
 
-  useEffect(() => {
-    trackEvent("page_view", { surface: "app" });
-  }, []);
-
   const storageKey = authUser ? `${STORAGE_KEY}:${authUser.id}` : STORAGE_KEY;
 
   const applyWorkspaceSnapshot = useCallback(

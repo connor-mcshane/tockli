@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import MarketingFooter from "@/app/MarketingFooter";
 import MarketingHeader from "@/app/MarketingHeader";
 import { trackEvent } from "@/lib/analytics";
@@ -102,10 +102,6 @@ export default function LandingPageClient() {
   );
   const [revealed, setRevealed] = useState(false);
   const estimate = useMemo(() => estimateFocusScore(answers), [answers]);
-
-  useEffect(() => {
-    trackEvent("page_view", { surface: "landing" });
-  }, []);
 
   function trackCta(cta: string, destination: string) {
     trackEvent("cta_clicked", {
