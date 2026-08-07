@@ -43,20 +43,23 @@ test("server-renders launch marketing routes", async () => {
   const home = await render("/");
   assert.equal(home.status, 200);
   const homeHtml = await home.text();
-  assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
+  assert.match(homeHtml, /Find out your focus score/);
+  assert.match(homeHtml, /Rest days never count against you/);
+  assert.match(homeHtml, /Reveal my focus score/);
   assert.match(homeHtml, /Choose/);
   assert.match(homeHtml, /Focus/);
-  assert.match(homeHtml, /Review/);
+  assert.match(homeHtml, /Bank it/);
   assert.match(homeHtml, /About/);
   assert.match(homeHtml, /Get started for free/);
-  assert.match(homeHtml, /Personal task boards/);
-  assert.match(homeHtml, /About Tockli/);
-  assert.match(homeHtml, /Personal productivity, without the admin/);
+  assert.match(homeHtml, /35 points/);
+  assert.match(homeHtml, /Privacy/);
+  assert.match(homeHtml, /Terms/);
+  assert.match(homeHtml, /Show up. Focus. Finish/);
 
   const landing = await render("/landing");
   assert.equal(landing.status, 200);
   const landingHtml = await landing.text();
-  assert.match(landingHtml, /Turn a messy task list into one protected focus block/);
+  assert.match(landingHtml, /Find out your focus score/);
   assert.doesNotMatch(landingHtml, /Open the workspace/);
 
   const signup = await render("/signup");

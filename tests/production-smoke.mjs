@@ -96,8 +96,11 @@ async function runSmoke() {
     await waitForServer(baseUrl, () => output, () => exited);
 
     const homeHtml = await fetchText(baseUrl, "/");
-    assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
-    assert.match(homeHtml, /About Tockli/);
+    assert.match(homeHtml, /Find out your focus score/);
+    assert.match(homeHtml, /Reveal my focus score/);
+    assert.match(homeHtml, /Rest days never count against you/);
+    assert.match(homeHtml, /Privacy/);
+    assert.match(homeHtml, /Terms/);
 
     const loginHtml = await fetchText(baseUrl, "/login?next=/app");
     assert.match(loginHtml, /Log in and pick up your next focus block/);
