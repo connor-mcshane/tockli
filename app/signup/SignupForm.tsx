@@ -74,7 +74,6 @@ export default function SignupForm() {
         variant: assignedVariant.id,
       });
     });
-    trackEvent("page_view", { surface: "signup" });
   }, []);
 
   async function captureMarketingIntent(normalizedEmail: string) {
@@ -214,13 +213,20 @@ export default function SignupForm() {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
+      const analyticsReason =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : "signup_error";
       trackEvent("signup_failed", {
         method: supabase ? "supabase_auth" : "email",
-        reason,
+        reason: analyticsReason,
       });
       trackEvent("auth_signup_failed", {
         method: "email_password",
-        reason,
+        reason: analyticsReason,
       });
       setStatus("error");
       setMessage(reason);

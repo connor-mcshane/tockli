@@ -42,7 +42,6 @@ export default function LandingPageClient() {
   useEffect(() => {
     const assignedVariant = getExperimentVariant(landingHeroExperiment);
     window.requestAnimationFrame(() => setVariant(assignedVariant));
-    trackEvent("page_view", { surface: "landing" });
     trackEvent("experiment_viewed", {
       experiment_id: landingHeroExperiment.id,
       variant: assignedVariant.id,
