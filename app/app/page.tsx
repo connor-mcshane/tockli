@@ -50,10 +50,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { trackEvent } from "@/lib/analytics";
+import { calculateFocusScoreTrend } from "@/lib/focus-score.mjs";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import {
   buildRecentActivityDates,
+  moveTaskWithCompletion,
   resolveActiveProjectId,
+  taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "@/lib/workspace-ui.mjs";
 
@@ -179,6 +182,7 @@ type Task = {
   subtasks: SubTask[];
   comments: TaskComment[];
   due: string;
+  completedAt?: string | null;
 };
 
 type FocusSession = {
@@ -403,6 +407,7 @@ const initialTasks: Task[] = [
     title: "Summarize the week of focus sessions",
     description: "Daily review is more useful than vanity stats.",
     status: "done",
+    completedAt: new Date(Date.now() - 86400000 * 3).toISOString(),
     estimate: 25,
     spent: 25,
     priority: "low",
@@ -1065,6 +1070,7 @@ function mapRemoteTask(row: RemoteTaskRow): Task {
   return {
     categoryId: row.category_id ?? null,
     comments,
+    completedAt: row.completed_at ?? null,
     description: row.note ?? "",
     due: row.due_label ?? "",
     estimate: row.estimate_minutes,
@@ -1267,7 +1273,7 @@ async function loadRemoteWorkspaceSnapshot(
     supabase
       .from("tasks")
       .select(
-        "id,project_id,category_id,title,note,status,priority,estimate_minutes,spent_minutes,due_label,sort_order,created_at,task_tags(label),task_subtasks(id,title,is_done,sort_order),task_comments(id,author_id,body,created_at,profiles(id,email,display_name))",
+        "id,project_id,category_id,title,note,status,priority,estimate_minutes,spent_minutes,due_label,sort_order,created_at,completed_at,task_tags(label),task_subtasks(id,title,is_done,sort_order),task_comments(id,author_id,body,created_at,profiles(id,email,display_name))",
       )
       .in("project_id", projectIds)
       .order("sort_order", { ascending: true })
@@ -1438,6 +1444,7 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
   }
 
   return tasks.map((task) => ({
+    completedAt: task.completedAt ?? null,
     id: task.id ?? createId("task"),
     projectId: task.projectId ?? initialProjects[0].id,
     title: task.title?.trim() || "Untitled task",
@@ -1542,6 +1549,7 @@ type RemoteTaskRow = {
   due_label?: string | null;
   sort_order?: number | null;
   created_at?: string | null;
+  completed_at?: string | null;
   task_tags?: RemoteTagRow[] | null;
   task_subtasks?: RemoteSubtaskRow[] | null;
   task_comments?: RemoteCommentRow[] | null;
@@ -2263,6 +2271,7 @@ export default function Home() {
             category_id: mappedCategoryId && isUuid(mappedCategoryId)
               ? mappedCategoryId
               : null,
+            completed_at: task.completedAt ?? null,
             created_by: syncAuthUser.id,
             due_label: task.due || null,
             estimate_minutes: normalizeInteger(task.estimate, 1, 480, settings.focusMinutes),
@@ -3103,7 +3112,7 @@ export default function Home() {
       return;
     }
 
-    const task: Task = {
+    const task = moveTaskWithCompletion({
       id: createId("task"),
       projectId: activeProjectId,
       title: "Untitled task",
@@ -3117,7 +3126,7 @@ export default function Home() {
       subtasks: [],
       comments: [],
       due: "",
-    };
+    }, status, activeBoardColumns) as Task;
 
     markTaskDirty(task.id);
     setTasks((current) => [task, ...current]);
@@ -3145,7 +3154,11 @@ export default function Home() {
     }
 
     setTasks((current) =>
-      current.map((task) => (task.id === taskId ? { ...task, status } : task)),
+      current.map((task) =>
+        task.id === taskId
+          ? moveTaskWithCompletion(task, status, activeBoardColumns)
+          : task,
+      ),
     );
     markTaskDirty(taskId);
 
@@ -3332,12 +3345,15 @@ export default function Home() {
         Math.min(deletedIndex, remainingActiveColumns.length - 1)
       ];
 
+    let promotedDoneColumnId: string | null = null;
     if (
       deletedColumn.isDone &&
       !remainingActiveColumns.some((column) => column.isDone)
     ) {
+      const promotedDoneColumn = remainingActiveColumns.at(-1)!;
+      promotedDoneColumnId = promotedDoneColumn.id;
       remainingActiveColumns[remainingActiveColumns.length - 1] = {
-        ...remainingActiveColumns[remainingActiveColumns.length - 1],
+        ...promotedDoneColumn,
         isDone: true,
       };
     }
@@ -3347,12 +3363,12 @@ export default function Home() {
     const remainingColumns = project.columns
       .filter((column) => column.id !== columnId)
       .map((column) => remainingColumnById.get(column.id) ?? column);
-    const movedTaskIds = tasks
-      .filter(
-        (task) =>
-          task.projectId === activeProjectId && task.status === columnId,
-      )
-      .map((task) => task.id);
+    const affectedTaskIds = taskIdsAffectedByColumnDeletion(
+      tasks,
+      activeProjectId,
+      columnId,
+      promotedDoneColumnId,
+    );
 
     setProjects((current) =>
       current.map((item) =>
@@ -3363,15 +3379,22 @@ export default function Home() {
     );
     setTasks((current) =>
       current.map((task) =>
-        task.projectId === activeProjectId && task.status === columnId
-          ? { ...task, status: fallbackColumn.id }
+        task.projectId === activeProjectId
+          ? moveTaskWithCompletion(
+              task,
+              task.status === columnId ? fallbackColumn.id : task.status,
+              remainingActiveColumns,
+            )
           : task,
       ),
     );
     markProjectDirty(activeProjectId);
-    movedTaskIds.forEach(markTaskDirty);
+    affectedTaskIds.forEach(markTaskDirty);
     trackEvent("board_column_deleted", {
-      moved_tasks: movedTaskIds.length,
+      moved_tasks: tasks.filter(
+        (task) =>
+          task.projectId === activeProjectId && task.status === columnId,
+      ).length,
       project_kind: project.kind,
     });
   }
@@ -3391,13 +3414,18 @@ export default function Home() {
     setTasks((current) =>
       current.map((task) =>
         task.id === taskId
-          ? {
-              ...task,
-              ...updates,
-              tags: updates.tags
-                ? Array.from(new Set(updates.tags.map(normalizeTag).filter(Boolean)))
-                : task.tags,
-            }
+          ? moveTaskWithCompletion(
+              {
+                ...task,
+                ...updates,
+                tags: updates.tags
+                  ? Array.from(new Set(updates.tags.map(normalizeTag).filter(Boolean)))
+                  : task.tags,
+              },
+              updates.status ?? task.status,
+              projects.find((project) => project.id === task.projectId)?.columns ??
+                createDefaultBoardColumns(),
+            )
           : task,
       ),
     );
@@ -4898,7 +4926,9 @@ export default function Home() {
                 categories={categories}
                 projects={projects}
                 sessions={sessions}
+                settings={settings}
                 tasks={tasks}
+                userId={appUserId}
               />
             ) : null}
 
@@ -7729,17 +7759,22 @@ function AnalyticsView({
   categories,
   projects,
   sessions,
+  settings,
   tasks,
+  userId,
 }: {
   cancellations: PomodoroCancellation[];
   categories: TaskCategory[];
   projects: Project[];
   sessions: FocusSession[];
+  settings: UserSettings;
   tasks: Task[];
+  userId: string;
 }) {
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
   const [projectFilterId, setProjectFilterId] = useState<"all" | string>("all");
   const [selectedAnalyticsTags, setSelectedAnalyticsTags] = useState<string[]>([]);
+  const trackedFocusScoreRef = useRef("");
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const rangeStart = new Date(today);
@@ -7837,9 +7872,82 @@ function AnalyticsView({
     ? Math.round((completedCount / visibleTasks.length) * 100)
     : 0;
   const totalAttempts = rangeSessions.length + rangeCancellations.length;
-  const flowScore = totalAttempts
-    ? ((rangeSessions.length / totalAttempts) * 10).toFixed(1)
-    : "0.0";
+  const focusSessions = analyticsSessions.filter(
+    (session) => !session.userId || session.userId === userId,
+  );
+  const focusCancellations = analyticsCancellations.filter(
+    (cancellation) => !cancellation.userId || cancellation.userId === userId,
+  );
+  const completedTasks = visibleTasks.flatMap((task) =>
+    task.completedAt ? [{ completedAt: task.completedAt }] : [],
+  );
+  const focusScoreTrend = calculateFocusScoreTrend({
+    cancellations: focusCancellations,
+    completedTasks,
+    sessions: focusSessions,
+    settings,
+  });
+  const focusScore = focusScoreTrend.current;
+  const focusOpportunityId = focusScore.biggestOpportunity?.id ?? null;
+
+  useEffect(() => {
+    const trackingKey = [
+      effectiveProjectFilterId,
+      activeAnalyticsTags.join(","),
+      focusScore.window.to,
+      focusScore.score ?? "locked",
+    ].join(":");
+
+    if (trackedFocusScoreRef.current === trackingKey) {
+      return;
+    }
+
+    trackedFocusScoreRef.current = trackingKey;
+    trackEvent("focus_score_viewed", {
+      band: focusScore.band?.label ?? null,
+      days_until_unlock: focusScore.daysUntilUnlock,
+      project_scope: effectiveProjectFilterId === "all" ? "all" : "project",
+      score: focusScore.score,
+      unlocked: focusScore.unlocked,
+    });
+
+    if (focusOpportunityId) {
+      trackEvent("nudge_shown", {
+        component: focusOpportunityId,
+        nudge_type: "focus_score_opportunity",
+        score: focusScore.score,
+      });
+    }
+
+    if (!focusScore.unlocked) {
+      return;
+    }
+
+    const unlockKey = `tockli.focusScoreUnlocked:${userId}:${focusScore.window.to}`;
+    try {
+      if (window.localStorage.getItem(unlockKey)) {
+        return;
+      }
+      window.localStorage.setItem(unlockKey, "1");
+    } catch {
+      // Analytics is best effort when storage is unavailable.
+    }
+
+    trackEvent("focus_score_unlocked", {
+      band: focusScore.band?.label ?? null,
+      score: focusScore.score,
+    });
+  }, [
+    activeAnalyticsTags,
+    effectiveProjectFilterId,
+    focusScore.band?.label,
+    focusOpportunityId,
+    focusScore.daysUntilUnlock,
+    focusScore.score,
+    focusScore.unlocked,
+    focusScore.window.to,
+    userId,
+  ]);
 
   const activityDays = new Set(
     analyticsSessions.map((session) => dateKey(session.completedAt)),
@@ -8054,10 +8162,99 @@ function AnalyticsView({
         />
         <MetricCard
           icon={CheckCircle2}
-          label="Flow score"
+          label="Focus score"
           tone="ink"
-          value={`${flowScore} / 10`}
+          value={
+            focusScore.unlocked
+              ? `${focusScore.score} / 100`
+              : `${focusScore.daysUntilUnlock} ${
+                  focusScore.daysUntilUnlock === 1 ? "day" : "days"
+                } to unlock`
+          }
         />
+      </section>
+
+      <section
+        aria-labelledby="focus-score-title"
+        className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5"
+      >
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase text-[var(--danger)]">
+              Rolling 7-day score
+            </p>
+            <h3 id="focus-score-title" className="mt-1 text-xl font-semibold">
+              Did you do the work you planned?
+            </h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+              Your Focus Score rewards showing up on working days, reaching your
+              session goal, finishing cards, and following sessions through.
+            </p>
+          </div>
+          {focusScore.unlocked ? (
+            <div className="shrink-0 text-left sm:text-right">
+              <div className="text-4xl font-bold">{focusScore.score}</div>
+              <p className="mt-1 text-sm font-semibold text-[var(--green-strong)]">
+                {focusScore.band?.label}
+                {focusScoreTrend.delta === null
+                  ? ""
+                  : ` · ${focusScoreTrend.delta >= 0 ? "+" : ""}${
+                      focusScoreTrend.delta
+                    } vs prior week`}
+              </p>
+            </div>
+          ) : (
+            <div className="max-w-xs rounded-md bg-[var(--surface-muted)] px-4 py-3 text-sm text-[var(--muted)]">
+              Complete a session on {focusScore.daysUntilUnlock} more active{" "}
+              {focusScore.daysUntilUnlock === 1 ? "day" : "days"} to reveal your
+              score.
+            </div>
+          )}
+        </div>
+
+        {focusScore.unlocked ? (
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {focusScore.components.map((component) => (
+              <div
+                key={component.id}
+                className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4"
+              >
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <span className="font-semibold">{component.label}</span>
+                  <span className="text-[var(--muted)]">
+                    {component.earned}/{component.possible}
+                  </span>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface-hover)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--accent)]"
+                    style={{
+                      width: `${Math.round((component.ratio ?? 0) * 100)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {focusScore.unlocked && focusScore.biggestOpportunity ? (
+          <div className="mt-4 flex gap-3 rounded-md border-l-2 border-[var(--amber)] bg-[var(--amber-soft)] p-4">
+            <Sparkles
+              className="mt-0.5 shrink-0 text-[var(--amber-strong)]"
+              size={18}
+              aria-hidden="true"
+            />
+            <div>
+              <p className="text-sm font-semibold">
+                Next step: {focusScore.biggestOpportunity.label}
+              </p>
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
+                {focusScore.biggestOpportunity.hint}
+              </p>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.8fr)]">

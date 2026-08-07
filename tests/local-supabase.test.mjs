@@ -238,7 +238,7 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
     { id: "todo", title: "Inbox" },
     { id: "active", title: "Doing" },
     { id: "waiting", title: "Waiting" },
-    { id: "done", title: "Done", isDone: true },
+    { id: "shipped", title: "Shipped", isDone: true },
   ];
   const [customizedProject] = await sql`
     update public.projects
@@ -398,6 +398,28 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
     `,
   );
   assert.equal(movedTask.status, "waiting");
+
+  const [completedTask] = await withAuthenticatedUser(ownerId, async (tx) =>
+    tx`
+      update public.tasks
+      set status = 'shipped'
+      where id = ${task.id}
+      returning status, completed_at
+    `,
+  );
+  assert.equal(completedTask.status, "shipped");
+  assert.ok(completedTask.completed_at instanceof Date);
+
+  const [reopenedTask] = await withAuthenticatedUser(ownerId, async (tx) =>
+    tx`
+      update public.tasks
+      set status = 'active'
+      where id = ${task.id}
+      returning status, completed_at
+    `,
+  );
+  assert.equal(reopenedTask.status, "active");
+  assert.equal(reopenedTask.completed_at, null);
 
   const [editorUpdatedTask] = await withAuthenticatedUser(editorId, async (tx) =>
     tx`
