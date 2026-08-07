@@ -5,6 +5,7 @@ import {
   buildRecentActivityDates,
   moveTaskWithCompletion,
   resolveActiveProjectId,
+  taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "../lib/workspace-ui.mjs";
 
@@ -62,4 +63,23 @@ test("task completion timestamps follow the project's done column", () => {
 
   const reopened = moveTaskWithCompletion(completed, "todo", columns);
   assert.equal(reopened.completedAt, null);
+});
+
+test("deleting a reordered done column dirties moved and newly completed tasks", () => {
+  const tasks = [
+    { id: "moved", projectId: "project-1", status: "done" },
+    { id: "fallback", projectId: "project-1", status: "active" },
+    { id: "newly-done", projectId: "project-1", status: "backlog" },
+    { id: "other-project", projectId: "project-2", status: "backlog" },
+  ];
+
+  assert.deepEqual(
+    taskIdsAffectedByColumnDeletion(
+      tasks,
+      "project-1",
+      "done",
+      "backlog",
+    ),
+    ["moved", "newly-done"],
+  );
 });

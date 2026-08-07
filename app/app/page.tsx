@@ -56,6 +56,7 @@ import {
   buildRecentActivityDates,
   moveTaskWithCompletion,
   resolveActiveProjectId,
+  taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "@/lib/workspace-ui.mjs";
 
@@ -3344,12 +3345,15 @@ export default function Home() {
         Math.min(deletedIndex, remainingActiveColumns.length - 1)
       ];
 
+    let promotedDoneColumnId: string | null = null;
     if (
       deletedColumn.isDone &&
       !remainingActiveColumns.some((column) => column.isDone)
     ) {
+      const promotedDoneColumn = remainingActiveColumns.at(-1)!;
+      promotedDoneColumnId = promotedDoneColumn.id;
       remainingActiveColumns[remainingActiveColumns.length - 1] = {
-        ...remainingActiveColumns[remainingActiveColumns.length - 1],
+        ...promotedDoneColumn,
         isDone: true,
       };
     }
@@ -3359,14 +3363,12 @@ export default function Home() {
     const remainingColumns = project.columns
       .filter((column) => column.id !== columnId)
       .map((column) => remainingColumnById.get(column.id) ?? column);
-    const affectedTaskIds = tasks
-      .filter(
-        (task) =>
-          task.projectId === activeProjectId &&
-          (task.status === columnId ||
-            (deletedColumn.isDone && task.status === fallbackColumn.id)),
-      )
-      .map((task) => task.id);
+    const affectedTaskIds = taskIdsAffectedByColumnDeletion(
+      tasks,
+      activeProjectId,
+      columnId,
+      promotedDoneColumnId,
+    );
 
     setProjects((current) =>
       current.map((item) =>
