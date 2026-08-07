@@ -5,11 +5,11 @@ import {
   BarChart3,
   Clock3,
   FolderKanban,
-  TimerReset,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import MarketingFooter from "@/app/MarketingFooter";
 import MarketingHeader from "@/app/MarketingHeader";
 import { trackEvent } from "@/lib/analytics";
 import { getExperimentVariant, landingHeroExperiment } from "@/lib/experiments";
@@ -129,54 +129,7 @@ export default function LandingPageClient() {
         </div>
       </section>
 
-      <footer
-        className="scroll-mt-6 bg-[#171918] px-4 py-12 text-white md:px-8"
-        id="about"
-      >
-        <div className="mx-auto max-w-7xl">
-          <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
-            <div className="max-w-sm">
-              <Link
-                className="flex w-fit items-center gap-3"
-                href="/"
-                onClick={() => trackCta("footer_logo", "/")}
-              >
-                <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
-                  <TimerReset size={20} aria-hidden="true" />
-                </span>
-                <span className="text-lg font-semibold">Tockli</span>
-              </Link>
-              <p className="mt-5 text-sm leading-6 text-[#b9bcb9]">
-                A personal task board, committed focus timer, and useful record
-                of where your time went.
-              </p>
-            </div>
-
-            <div>
-              <h2 className="text-sm font-semibold">Product</h2>
-              <ul className="mt-4 space-y-3 text-sm text-[#b9bcb9]">
-                <li>Personal task boards</li>
-                <li>Committed focus timers</li>
-                <li>Session notes and analytics</li>
-              </ul>
-            </div>
-
-            <div>
-              <h2 className="text-sm font-semibold">About Tockli</h2>
-              <p className="mt-4 max-w-sm text-sm leading-6 text-[#b9bcb9]">
-                Tockli is independently designed and built for people who want
-                to plan clearly, commit to focused time, and keep a useful
-                record of their work without enterprise overhead.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-12 flex flex-col gap-2 border-t border-white/15 pt-6 text-xs text-[#8e928e] sm:flex-row sm:items-center sm:justify-between">
-            <p>© 2026 Tockli.</p>
-            <p>Personal productivity, without the admin.</p>
-          </div>
-        </div>
-      </footer>
+      <MarketingFooter />
     </main>
   );
 }

@@ -97,7 +97,8 @@ async function runSmoke() {
 
     const homeHtml = await fetchText(baseUrl, "/");
     assert.match(homeHtml, /Turn a messy task list into one protected focus block/);
-    assert.match(homeHtml, /About Tockli/);
+    assert.match(homeHtml, /Privacy/);
+    assert.match(homeHtml, /Terms/);
 
     const loginHtml = await fetchText(baseUrl, "/login?next=/app");
     assert.match(loginHtml, /Log in and pick up your next focus block/);
@@ -125,7 +126,15 @@ async function runSmoke() {
 
     const sitemapXml = await fetchText(baseUrl, "/sitemap.xml");
     assert.match(sitemapXml, /\/login/);
+    assert.match(sitemapXml, /\/privacy/);
+    assert.match(sitemapXml, /\/terms/);
     assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);
+
+    const privacyHtml = await fetchText(baseUrl, "/privacy");
+    assert.match(privacyHtml, /Privacy Policy/);
+
+    const termsHtml = await fetchText(baseUrl, "/terms");
+    assert.match(termsHtml, /Terms of Service/);
 
     console.log(`Production smoke passed at ${baseUrl}`);
   } finally {

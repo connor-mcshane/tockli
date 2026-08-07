@@ -1,17 +1,16 @@
 import type { Metadata } from "next";
+import { siteConfig } from "@/lib/marketing";
 import LandingPageClient from "./LandingPageClient";
 
 export const metadata: Metadata = {
   title: "Tockli - Focus timer and task board",
-  description:
-    "Tockli connects a calm task board, focus timer, session notes, sharing, and analytics for deep work.",
+  description: siteConfig.description,
   alternates: {
     canonical: "/",
   },
   openGraph: {
     title: "Tockli - Focus timer and task board",
-    description:
-      "Plan the work, run the timer, and keep useful proof of each focus session.",
+    description: siteConfig.description,
     images: ["/og.png"],
     url: "/",
   },
