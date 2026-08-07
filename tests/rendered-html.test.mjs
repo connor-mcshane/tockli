@@ -47,10 +47,9 @@ test("server-renders launch marketing routes", async () => {
   assert.match(homeHtml, /Choose/);
   assert.match(homeHtml, /Focus/);
   assert.match(homeHtml, /Review/);
-  assert.match(homeHtml, /About/);
   assert.match(homeHtml, /Get started for free/);
-  assert.match(homeHtml, /Personal task boards/);
-  assert.match(homeHtml, /About Tockli/);
+  assert.match(homeHtml, /Privacy/);
+  assert.match(homeHtml, /Terms/);
   assert.match(homeHtml, /Personal productivity, without the admin/);
 
   const landing = await render("/landing");
@@ -89,6 +88,20 @@ test("server-renders launch marketing routes", async () => {
   assert.equal(article.status, 200);
   const articleHtml = await article.text();
   assert.match(articleHtml, /Start with the work, then start the clock/);
+
+  const privacy = await render("/privacy");
+  assert.equal(privacy.status, 200);
+  const privacyHtml = await privacy.text();
+  assert.match(privacyHtml, /Privacy Policy/);
+  assert.match(privacyHtml, /What Tockli stores, and why/);
+  assert.match(privacyHtml, /Google shares your email address, name/);
+
+  const terms = await render("/terms");
+  assert.equal(terms.status, 200);
+  const termsHtml = await terms.text();
+  assert.match(termsHtml, /Terms of Service/);
+  assert.match(termsHtml, /Your work stays yours/);
+  assert.match(termsHtml, /Plans and payments/);
 });
 
 test("server-renders SEO discovery routes", async () => {
@@ -97,6 +110,8 @@ test("server-renders SEO discovery routes", async () => {
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /<loc>.*\/<\/loc>/);
   assert.match(sitemapXml, /\/login/);
+  assert.match(sitemapXml, /\/privacy/);
+  assert.match(sitemapXml, /\/terms/);
   assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);
 
   const robots = await render("/robots.txt");

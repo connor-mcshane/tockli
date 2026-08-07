@@ -20,12 +20,19 @@ export default function sitemap(): MetadataRoute.Sitemap {
       path: "/blog",
       priority: 0.7,
     },
+    {
+      path: "/privacy",
+      priority: 0.3,
+    },
+    {
+      path: "/terms",
+      priority: 0.3,
+    },
   ];
 
   return [
     ...staticRoutes.map((route) => ({
       changeFrequency: "weekly" as const,
-      lastModified: new Date("2026-07-24"),
       priority: route.priority,
       url: `${baseUrl}${route.path}`,
     })),
