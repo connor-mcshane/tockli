@@ -26,6 +26,8 @@ NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
+NEXT_PUBLIC_POSTHOG_KEY=
+NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 SUPABASE_SERVICE_ROLE_KEY=
@@ -96,6 +98,8 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 INVITE_FROM_EMAIL=
 NEXT_PUBLIC_ANALYTICS_ENDPOINT=
 NEXT_PUBLIC_ANALYTICS_DEBUG=false
+NEXT_PUBLIC_POSTHOG_KEY=
+NEXT_PUBLIC_POSTHOG_HOST=https://eu.i.posthog.com
 NEXT_PUBLIC_EXPERIMENT_SALT=tockli-2026-launch
 NEXT_PUBLIC_SIGNUP_ENDPOINT=
 ```
@@ -109,10 +113,29 @@ deploying. Keep `SUPABASE_SERVICE_ROLE_KEY` and `RESEND_API_KEY` as secrets.
 
 The client helper in `lib/analytics.ts` sends to:
 
+- PostHog when `NEXT_PUBLIC_POSTHOG_KEY` is set
 - `window.dataLayer` for tag manager style integrations
 - `window.plausible` when Plausible is present
 - `NEXT_PUBLIC_ANALYTICS_ENDPOINT` with `sendBeacon` or `fetch`
 - `window.tockliEvents` for local QA
+
+Every sink is gated by the visitor's explicit analytics choice. The global
+preferences control appears only when PostHog or a custom endpoint is configured
+and lets visitors decline, allow, or later change analytics. Do Not Track and
+Global Privacy Control always disable collection.
+
+PostHog defaults to EU ingestion and uses memory-only persistence. Tockli sends
+only explicit named events, route paths, and PostHog's basic browser/device
+metadata; automatic click capture, session recordings, exception capture,
+performance capture, cookies, and GeoIP enrichment are disabled. Signed-in users
+are identified by their opaque Supabase UUID so cross-device funnels work. Email,
+display name, task text, project IDs, goals, descriptions, and session notes are
+excluded. Referrer and current-page query strings are stripped.
+
+The privacy notice must name PostHog as a processor, describe the event and
+account-ID data above, state the purpose (understanding adoption and improving
+the product), identify the EU hosting location and retention period chosen in
+PostHog, and explain how to reopen **Analytics settings** to withdraw consent.
 
 Current event names:
 
@@ -141,7 +164,29 @@ Current event names:
 - `timer_cancelled`
 - `session_completed`
 - `project_created`
+- `project_updated`
+- `project_deleted`
+- `onboarding_completed`
+- `project_invite_accepted`
 - `settings_updated`
+- `session_goal_set`
+- `focus_score_viewed`
+- `focus_score_unlocked`
+- `focus_score_estimated`
+- `streak_extended`
+- `streak_broken`
+- `streak_freeze_used`
+- `daily_goal_met`
+- `nudge_shown`
+- `nudge_clicked`
+- `weekly_recap_opened`
+- `paywall_viewed`
+- `upgrade_clicked`
+- `checkout_started`
+- `checkout_completed`
+- `ai_insight_generated`
+- `ai_insight_viewed`
+- `ai_insight_rated`
 
 ## A/B Test Framework
 

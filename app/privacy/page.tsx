@@ -65,11 +65,11 @@ export default function PrivacyPage() {
       <div className="mx-auto max-w-3xl space-y-10 px-4 py-12 md:px-8">
         <p className="rounded-lg border border-[#ffd0de] bg-[#fff4f7] p-5 text-base leading-7 text-[#4f4d49]">
           <strong className="font-semibold text-[#1a1c1b]">
-            A note on what is coming.
+            Analytics is optional.
           </strong>{" "}
-          Tockli does not yet run a product analytics service. Analytics is
-          planned, and this policy will be updated with the provider, the events
-          collected, and the retention period before any of it goes live.
+          Tockli asks before sending product analytics to PostHog. Declining
+          does not change how the product works, and you can change your choice
+          at any time using the Analytics settings button.
         </p>
 
         <Section heading="Who is responsible for your data">
@@ -198,10 +198,10 @@ export default function PrivacyPage() {
             order to serve pages and protect against abuse.
           </p>
           <p>
-            Supabase, Netlify, and Google (only if you use Google sign-in) act
-            as processors for Tockli. Data may be processed outside the UK by
-            these providers under the appropriate transfer safeguards in their
-            data processing terms.
+            Supabase, Netlify, PostHog (only if you allow analytics), and Google
+            (only if you use Google sign-in) act as processors for Tockli. Data
+            may be processed outside the UK by these providers under the
+            appropriate transfer safeguards in their data processing terms.
           </p>
         </Section>
 
@@ -221,21 +221,19 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong className="font-semibold text-[#1a1c1b]">
-                <code className="font-mono text-sm">
-                  tockli.analytics.anonymousId
-                </code>
+                <code className="font-mono text-sm">tockli.analytics.consent</code>
                 .
               </strong>{" "}
-              A random identifier held in your browser&apos;s local storage so
-              that product events can be counted without being tied to your
-              name. It is not linked to your account record.
+              Your Allow or Decline choice, held in local storage so Tockli can
+              remember it. Analytics does not start while no choice has been
+              made.
             </li>
             <li>
               <strong className="font-semibold text-[#1a1c1b]">
                 <code className="font-mono text-sm">tockli.experiments</code>.
               </strong>{" "}
-              Which landing-page variant you were assigned, held in local
-              storage so the page does not change under you between visits.
+              Which sign-up experiment variant you were assigned, held in local
+              storage so it does not change between visits.
             </li>
           </ul>
           <p>
@@ -244,22 +242,38 @@ export default function PrivacyPage() {
               flowtimer.analytics.anonymousId
             </code>{" "}
             and <code className="font-mono text-sm">flowtimer.experiments</code>
-            . These are migrated to the current keys and removed the next time
-            you load the site.
+            . Old anonymous analytics identifiers are deleted. Experiment
+            assignments are moved to the current key and the old key is deleted.
           </p>
           <p>
-            Clearing your browser storage removes all of the above. You will be
-            signed out and given a new anonymous identifier.
+            Clearing your browser storage removes all of the above and signs
+            you out. Analytics then stays off until you make a new choice.
           </p>
         </Section>
 
         <Section heading="Product analytics">
           <p>
-            Today, product events are recorded in the page you are looking at and
-            are not sent anywhere unless an analytics endpoint has been
-            configured for the deployment. When a hosted analytics provider is
-            added, this policy will be updated first to name the provider, the
-            events collected, and how long they are kept.
+            If you allow analytics, Tockli sends named product actions to a
+            PostHog project hosted in the EU. These actions include page views,
+            sign-up and login steps, task and timer actions, Focus Score views,
+            and calls to action. Each event can include its time, the route path
+            without its query string, and basic browser or device information.
+            Before sign-in, a random identifier exists only in memory. After
+            sign-in, Tockli may use your opaque Supabase account ID so a product
+            journey can be understood across devices.
+          </p>
+          <p>
+            Tockli does not send PostHog your email address, display name, task
+            text, goals, project descriptions, project IDs, or session notes.
+            Cookies, persistent browser identity, automatic click capture,
+            session recordings, exception and performance capture, and precise
+            location enrichment are disabled. Do Not Track and Global Privacy
+            Control signals override an earlier Allow choice.
+          </p>
+          <p>
+            You can withdraw consent at any time through Analytics settings.
+            Tockli then stops collection, clears the analytics identity in the
+            current browser, and asks PostHog to opt that browser out.
           </p>
         </Section>
 
@@ -268,10 +282,9 @@ export default function PrivacyPage() {
             Tockli relies on <strong>performance of a contract</strong> to run
             your account, store your boards, and keep your focus history. It
             relies on <strong>legitimate interests</strong> to keep the service
-            secure, to prevent abuse, and to understand in aggregate which parts
-            of the product are used. Where consent is required, for example for
-            non-essential analytics, it will be asked for before the processing
-            starts.
+            secure and to prevent abuse. Optional PostHog product analytics is
+            based on <strong>consent</strong>, which is requested before any
+            analytics is sent and can be withdrawn at any time.
           </p>
         </Section>
 
@@ -289,6 +302,11 @@ export default function PrivacyPage() {
             below. Backup copies may remain for a limited period until the
             provider&apos;s normal backup cycle rolls over, or where retention is
             required by law.
+          </p>
+          <p>
+            PostHog product analytics is kept for no more than 12 months. Your
+            consent choice remains in your browser until you change it or clear
+            browser storage.
           </p>
         </Section>
 

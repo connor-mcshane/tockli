@@ -46,7 +46,6 @@ export default function LoginForm() {
         setMessage(messageParam);
       }
     });
-    trackEvent("page_view", { surface: "login" });
   }, []);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
@@ -77,7 +76,7 @@ export default function LoginForm() {
     if (error) {
       trackEvent("login_failed", {
         method: "email_password",
-        reason: error.message,
+        reason: error.code ?? "auth_error",
       });
       setStatus("error");
       setMessage(error.message);

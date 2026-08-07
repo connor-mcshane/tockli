@@ -1,10 +1,16 @@
 import Link from "next/link";
 import { TimerReset } from "lucide-react";
 
-const legalLinks = [
+const productLinks = [
+  { href: "/#focus-score", label: "Focus score" },
+  { href: "/#how-it-works", label: "How it works" },
+  { href: "/blog", label: "Blog" },
+];
+
+const accountLinks = [
+  { href: "/login", label: "Log in" },
   { href: "/privacy", label: "Privacy" },
   { href: "/terms", label: "Terms" },
-  { href: "/blog", label: "Blog" },
 ];
 
 export default function MarketingFooter() {
@@ -14,7 +20,7 @@ export default function MarketingFooter() {
       id="about"
     >
       <div className="mx-auto max-w-7xl">
-        <div className="flex flex-col gap-8 sm:flex-row sm:items-start sm:justify-between">
+        <div className="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
           <div className="max-w-sm">
             <Link className="flex w-fit items-center gap-3" href="/">
               <span className="flex h-9 w-9 items-center justify-center rounded-md bg-[#ff005e] text-white">
@@ -23,13 +29,27 @@ export default function MarketingFooter() {
               <span className="text-lg font-semibold">Tockli</span>
             </Link>
             <p className="mt-5 text-sm leading-6 text-[#b9bcb9]">
-              Pick a card. Start the timer. Keep your focus streak moving.
+              Turn the work you finish into a focus score you can improve.
             </p>
           </div>
 
-          <nav aria-label="Legal navigation">
-            <ul className="space-y-3 text-sm text-[#b9bcb9]">
-              {legalLinks.map((link) => (
+          <nav aria-label="Product navigation">
+            <h2 className="text-sm font-semibold">Product</h2>
+            <ul className="mt-4 space-y-3 text-sm text-[#b9bcb9]">
+              {productLinks.map((link) => (
+                <li key={link.href}>
+                  <Link className="transition hover:text-white" href={link.href}>
+                    {link.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
+
+          <nav aria-label="Account and legal navigation">
+            <h2 className="text-sm font-semibold">Tockli</h2>
+            <ul className="mt-4 space-y-3 text-sm text-[#b9bcb9]">
+              {accountLinks.map((link) => (
                 <li key={link.href}>
                   <Link className="transition hover:text-white" href={link.href}>
                     {link.label}
@@ -42,7 +62,7 @@ export default function MarketingFooter() {
 
         <div className="mt-12 flex flex-col gap-2 border-t border-white/15 pt-6 text-xs text-[#8e928e] sm:flex-row sm:items-center sm:justify-between">
           <p>© 2026 Tockli.</p>
-          <p>Personal productivity, without the admin.</p>
+          <p>Show up. Focus. Finish.</p>
         </div>
       </div>
     </footer>

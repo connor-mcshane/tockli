@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import AnalyticsConsentControl from "@/app/AnalyticsConsentControl";
+import AnalyticsLifecycle from "@/app/AnalyticsLifecycle";
 import { getSiteUrl, siteConfig } from "@/lib/marketing";
 import "./globals.css";
 
@@ -64,7 +66,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} antialiased`}>{children}</body>
+      <body className={`${inter.variable} antialiased`}>
+        <AnalyticsLifecycle />
+        <AnalyticsConsentControl />
+        {children}
+      </body>
     </html>
   );
 }
