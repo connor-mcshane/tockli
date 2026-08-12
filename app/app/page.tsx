@@ -1649,6 +1649,23 @@ function insertMarkdown(value: string, kind: "heading" | "bold" | "italic" | "li
   return `${value}${snippets[kind]}`.replace(/^\n/, "");
 }
 
+function applyTaskUpdates(task: Task, updates: Partial<Task>) {
+  return {
+    ...task,
+    ...updates,
+    tags: updates.tags
+      ? Array.from(new Set(updates.tags.map(normalizeTag).filter(Boolean)))
+      : task.tags,
+  };
+}
+
+function prepareTaskForSave(task: Task) {
+  return {
+    ...task,
+    title: task.title.trim() || "Untitled task",
+  };
+}
+
 export default function Home() {
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -1669,6 +1686,7 @@ export default function Home() {
   );
   const [projectNotice, setProjectNotice] = useState("");
   const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const [taskDraft, setTaskDraft] = useState<Task | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -1796,6 +1814,7 @@ export default function Home() {
         setRemainingSeconds(normalizedSettings.focusMinutes * 60);
         setSessionDurationMinutes(normalizedSettings.focusMinutes);
       }
+      setTaskDraft(null);
       setOnboardingOpen(false);
       setHydrated(true);
     },
@@ -2892,6 +2911,7 @@ export default function Home() {
       projectTasks[0],
     [activeDoneColumnId, projectTasks, selectedTaskId],
   );
+  const taskDrawerTask = taskDraft ?? selectedTask;
   const focusTask = useMemo(
     () => tasks.find((task) => task.id === focusTaskId),
     [focusTaskId, tasks],
@@ -3124,14 +3144,9 @@ export default function Home() {
       due: "",
     }, status, activeBoardColumns) as Task;
 
-    markTaskDirty(task.id);
-    setTasks((current) => [task, ...current]);
+    setTaskDraft(task);
     setSelectedTaskId(task.id);
     setTaskDrawerOpen(true);
-    trackEvent("task_created", {
-      project_kind: activeProject?.kind ?? "unknown",
-      status,
-    });
   }
 
   function toggleTag(tag: string) {
@@ -3396,8 +3411,15 @@ export default function Home() {
   }
 
   function selectTaskForEdit(taskId: string) {
+    setTaskDraft(null);
     setSelectedTaskId(taskId);
     setTaskDrawerOpen(true);
+  }
+
+  function updateTaskDraft(taskId: string, updates: Partial<Task>) {
+    setTaskDraft((current) =>
+      current?.id === taskId ? applyTaskUpdates(current, updates) : current,
+    );
   }
 
   function updateTask(taskId: string, updates: Partial<Task>) {
@@ -3411,13 +3433,7 @@ export default function Home() {
       current.map((task) =>
         task.id === taskId
           ? moveTaskWithCompletion(
-              {
-                ...task,
-                ...updates,
-                tags: updates.tags
-                  ? Array.from(new Set(updates.tags.map(normalizeTag).filter(Boolean)))
-                  : task.tags,
-              },
+              applyTaskUpdates(task, updates),
               updates.status ?? task.status,
               projects.find((project) => project.id === task.projectId)?.columns ??
                 createDefaultBoardColumns(),
@@ -3425,6 +3441,43 @@ export default function Home() {
           : task,
       ),
     );
+  }
+
+  function closeTaskDrawer(pendingUpdates?: Partial<Task>) {
+    if (taskDraft) {
+      const task = prepareTaskForSave(
+        applyTaskUpdates(taskDraft, pendingUpdates ?? {}),
+      );
+      markTaskDirty(task.id);
+      setTasks((current) =>
+        current.some((item) => item.id === task.id) ? current : [task, ...current],
+      );
+      setSelectedTaskId(task.id);
+      setTaskDraft(null);
+      setTaskDrawerOpen(false);
+      trackEvent("task_created", {
+        project_kind: activeProject?.kind ?? "unknown",
+        status: task.status,
+      });
+      return;
+    }
+
+    if (pendingUpdates && selectedTask) {
+      updateTask(selectedTask.id, pendingUpdates);
+    }
+
+    setTaskDrawerOpen(false);
+  }
+
+  function handleDeleteTask(taskId: string) {
+    if (taskDraft?.id === taskId) {
+      setTaskDraft(null);
+      setTaskDrawerOpen(false);
+      setSelectedTaskId(projectTasks[0]?.id ?? "");
+      return;
+    }
+
+    void deleteTask(taskId);
   }
 
   async function deleteTask(taskId: string) {
@@ -3933,6 +3986,7 @@ export default function Home() {
     setCategories((current) => [...current, defaultCategory]);
     setActiveProjectId(project.id);
     setSelectedTags([]);
+    setTaskDraft(null);
     setTaskDrawerOpen(false);
     setProjectDialog(null);
     setView("board");
@@ -3979,6 +4033,7 @@ export default function Home() {
       setActiveProjectId(nextProject.id);
       setSelectedTaskId("");
       setSelectedTags([]);
+      setTaskDraft(null);
       setTaskDrawerOpen(false);
     }
 
@@ -4021,6 +4076,7 @@ export default function Home() {
 
     setFocusTaskId("");
     setSelectedTags([]);
+    setTaskDraft(null);
     setTaskDrawerOpen(false);
     setView("board");
     setOnboardingOpen(false);
@@ -4048,6 +4104,7 @@ export default function Home() {
   }
 
   function startTask(taskId: string, requestedMinutes: number) {
+    setTaskDraft(null);
     setTaskDrawerOpen(false);
     setFocusTaskId(taskId);
 
@@ -4495,6 +4552,7 @@ export default function Home() {
                         onClick={() => {
                           setActiveProjectId(project.id);
                           setSelectedTags([]);
+                          setTaskDraft(null);
                           setTaskDrawerOpen(false);
                           setMobileMenuOpen(false);
                         }}
@@ -4604,6 +4662,7 @@ export default function Home() {
                       onClick={() => {
                         setActiveProjectId(project.id);
                         setSelectedTags([]);
+                        setTaskDraft(null);
                         setTaskDrawerOpen(false);
                       }}
                     >
@@ -4876,26 +4935,26 @@ export default function Home() {
                   searchQuery={taskSearchQuery}
                   archivedColumns={archivedBoardColumns}
                   selectedTags={selectedTags}
-                  selectedTaskId={selectedTask?.id}
+                  selectedTaskId={taskDraft ? undefined : selectedTask?.id}
                   todaysPomodoros={todaysPomodoros}
                 />
 
-                {taskDrawerOpen && selectedTask ? (
+                {taskDrawerOpen && taskDrawerTask ? (
                   <TaskDetailModal
-                    key={selectedTask.id}
+                    key={taskDrawerTask.id}
                     categories={activeProjectCategories}
                     columns={activeBoardColumns}
                     currentUserId={appUserId}
                     currentUserName={appUserName}
                     deleteDisabled={
-                      isRunning && focusTaskId === selectedTask.id
+                      isRunning && focusTaskId === taskDrawerTask.id
                     }
-                    onClose={() => setTaskDrawerOpen(false)}
+                    onClose={closeTaskDrawer}
                     onCreateCategory={createCategory}
-                    onDeleteTask={deleteTask}
-                    onUpdateTask={updateTask}
+                    onDeleteTask={handleDeleteTask}
+                    onUpdateTask={taskDraft ? updateTaskDraft : updateTask}
                     readOnly={!activeProjectCanEdit}
-                    task={selectedTask}
+                    task={taskDrawerTask}
                   />
                 ) : null}
               </>
@@ -6782,7 +6841,7 @@ function TaskDetailModal({
   currentUserId: string;
   currentUserName: string;
   deleteDisabled: boolean;
-  onClose: () => void;
+  onClose: (updates?: Partial<Task>) => void;
   onCreateCategory: (name: string, color: string) => string;
   onDeleteTask: (taskId: string) => void;
   onUpdateTask: (taskId: string, updates: Partial<Task>) => void;
@@ -6803,13 +6862,20 @@ function TaskDetailModal({
   );
   const completedSubtasks = task.subtasks.filter((subtask) => subtask.done).length;
   const hasUnsavedDescription = descriptionDraft !== task.description;
+  const closeWithPendingChanges = useCallback(() => {
+    onClose(
+      !readOnly && hasUnsavedDescription
+        ? { description: descriptionDraft }
+        : undefined,
+    );
+  }, [descriptionDraft, hasUnsavedDescription, onClose, readOnly]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        onClose();
+        closeWithPendingChanges();
       }
     }
 
@@ -6820,7 +6886,7 @@ function TaskDetailModal({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [onClose]);
+  }, [closeWithPendingChanges]);
 
   function updateSubtask(subtaskId: string, updates: Partial<SubTask>) {
     if (readOnly) {
@@ -6915,7 +6981,7 @@ function TaskDetailModal({
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[var(--overlay)] p-4 backdrop-blur-[1px] sm:items-center"
       onClick={(event) => {
         if (event.target === event.currentTarget) {
-          onClose();
+          closeWithPendingChanges();
         }
       }}
     >
@@ -6938,7 +7004,7 @@ function TaskDetailModal({
             aria-label="Close card details"
             className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--accent)]"
             type="button"
-            onClick={onClose}
+            onClick={closeWithPendingChanges}
           >
             <X size={18} aria-hidden="true" />
           </button>
@@ -7226,7 +7292,7 @@ function TaskDetailModal({
           />
           {!readOnly && hasUnsavedDescription ? (
             <p className="mt-1 text-xs text-[var(--amber)]">
-              Save the description before closing the card.
+              Description changes will save when the card closes.
             </p>
           ) : null}
         </div>
