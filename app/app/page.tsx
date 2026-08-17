@@ -707,11 +707,37 @@ function priorityClass(priority: Priority) {
 }
 
 function createId(prefix: string) {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
+  return `${prefix}-${createUuid()}`;
+}
+
+function createUuid() {
+  const cryptoProvider =
+    typeof globalThis.crypto === "undefined" ? null : globalThis.crypto;
+
+  if (cryptoProvider?.randomUUID) {
+    return cryptoProvider.randomUUID();
   }
 
-  return `${prefix}-${Date.now()}`;
+  if (cryptoProvider?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoProvider.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+      12,
+      16,
+    )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (char) =>
+    (
+      Number(char) ^
+      (Math.random() * 16) >> (Number(char) / 4)
+    ).toString(16),
+  );
 }
 
 function createInviteToken() {
@@ -1394,7 +1420,7 @@ function normalizeProjects(projects?: Array<Partial<Project>>): Project[] {
     );
 
     return {
-      id: project.id ?? createId("project"),
+      id: project.id ?? createUuid(),
       ownerId: project.ownerId ?? currentUser.id,
       name: project.name?.trim() || "New Project",
       description: project.description?.trim() ?? "",
@@ -1445,7 +1471,7 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
 
   return tasks.map((task) => ({
     completedAt: task.completedAt ?? null,
-    id: task.id ?? createId("task"),
+    id: task.id ?? createUuid(),
     projectId: task.projectId ?? initialProjects[0].id,
     title: task.title?.trim() || "Untitled task",
     description: task.description ?? task.note ?? "",
@@ -1457,13 +1483,13 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
     categoryId: task.categoryId ?? null,
     subtasks:
       task.subtasks?.map((subtask) => ({
-        id: subtask.id ?? createId("subtask"),
+        id: subtask.id ?? createUuid(),
         title: subtask.title?.trim() || "Untitled subtask",
         done: Boolean(subtask.done),
       })) ?? [],
     comments:
       task.comments?.map((comment) => ({
-        id: comment.id ?? createId("comment"),
+        id: comment.id ?? createUuid(),
         authorId: comment.authorId ?? "unknown-user",
         authorName: comment.authorName?.trim() || "Tockli user",
         body: comment.body ?? "",
@@ -1689,6 +1715,7 @@ export default function Home() {
   const [taskDraft, setTaskDraft] = useState<Task | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [taskSearchQuery, setTaskSearchQuery] = useState("");
+  const [remoteSyncRequestId, setRemoteSyncRequestId] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sessionNote, setSessionNote] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -1708,6 +1735,9 @@ export default function Home() {
   const dirtyProjectIdsRef = useRef(new Set<string>());
   const dirtyCategoryIdsRef = useRef(new Set<string>());
   const dirtyTaskIdsRef = useRef(new Set<string>());
+  const committedDraftTaskIdsRef = useRef(new Set<string>());
+  const remoteSyncInFlightRef = useRef(false);
+  const remoteSyncQueuedRef = useRef(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -2102,6 +2132,13 @@ export default function Home() {
     }
 
     async function syncWorkspaceToRemote() {
+      if (remoteSyncInFlightRef.current) {
+        remoteSyncQueuedRef.current = true;
+        return;
+      }
+
+      remoteSyncInFlightRef.current = true;
+
       try {
         const projectIdMap = new Map<string, string>();
         const categoryIdMap = new Map<string, string>();
@@ -2353,7 +2390,9 @@ export default function Home() {
           });
 
           if (tagRows.length) {
-            const { error } = await supabase!.from("task_tags").insert(tagRows);
+            const { error } = await supabase!
+              .from("task_tags")
+              .upsert(tagRows, { onConflict: "task_id,label" });
             if (error) {
               throw new Error(error.message);
             }
@@ -2393,7 +2432,7 @@ export default function Home() {
           if (subtaskRows.length) {
             const { data, error } = await supabase!
               .from("task_subtasks")
-              .insert(subtaskRows)
+              .upsert(subtaskRows, { onConflict: "id" })
               .select("id,task_id,sort_order");
             if (error) {
               throw new Error(error.message);
@@ -2694,6 +2733,12 @@ export default function Home() {
               : "Sync issue: your latest changes stayed in this browser.",
           );
         }
+      } finally {
+        remoteSyncInFlightRef.current = false;
+        if (remoteSyncQueuedRef.current) {
+          remoteSyncQueuedRef.current = false;
+          setRemoteSyncRequestId((current) => current + 1);
+        }
       }
     }
 
@@ -2715,6 +2760,7 @@ export default function Home() {
     focusTaskId,
     hydrated,
     projects,
+    remoteSyncRequestId,
     selectedTaskId,
     sessions,
     settings,
@@ -2966,7 +3012,7 @@ export default function Home() {
         (project) => project.id === sessionProjectId,
       );
       const session: FocusSession = {
-        id: createId("session"),
+        id: createUuid(),
         userId: appUserId,
         projectId: sessionProjectId,
         taskId: completedTask?.id ?? null,
@@ -3129,7 +3175,7 @@ export default function Home() {
     }
 
     const task = moveTaskWithCompletion({
-      id: createId("task"),
+      id: createUuid(),
       projectId: activeProjectId,
       title: "Untitled task",
       status,
@@ -3144,6 +3190,7 @@ export default function Home() {
       due: "",
     }, status, activeBoardColumns) as Task;
 
+    committedDraftTaskIdsRef.current.delete(task.id);
     setTaskDraft(task);
     setSelectedTaskId(task.id);
     setTaskDrawerOpen(true);
@@ -3445,9 +3492,16 @@ export default function Home() {
 
   function closeTaskDrawer(pendingUpdates?: Partial<Task>) {
     if (taskDraft) {
+      if (committedDraftTaskIdsRef.current.has(taskDraft.id)) {
+        setTaskDraft(null);
+        setTaskDrawerOpen(false);
+        return;
+      }
+
       const task = prepareTaskForSave(
         applyTaskUpdates(taskDraft, pendingUpdates ?? {}),
       );
+      committedDraftTaskIdsRef.current.add(task.id);
       markTaskDirty(task.id);
       setTasks((current) =>
         current.some((item) => item.id === task.id) ? current : [task, ...current],
@@ -3523,7 +3577,7 @@ export default function Home() {
     }
 
     const category: TaskCategory = {
-      id: createId("category"),
+      id: createUuid(),
       projectId: activeProjectId,
       name: name.trim() || "New Category",
       color,
@@ -3548,22 +3602,35 @@ export default function Home() {
   }
 
   async function ensureRemoteProject(project: Project) {
-    if (!supabase || !authUser || isUuid(project.id)) {
+    if (!supabase || !authUser) {
       return project;
     }
 
-    const { data, error } = await supabase
-      .from("projects")
-      .insert({
-        board_columns: project.columns,
-        color: project.color,
-        description: project.description,
-        kind: project.kind,
-        name: project.name,
-        owner_id: authUser.id,
-      })
-      .select("id,owner_id,name,description,kind,color,board_columns")
-      .single();
+    const projectPayload = {
+      board_columns: project.columns,
+      color: project.color,
+      description: project.description,
+      kind: project.kind,
+      name: project.name,
+      owner_id: authUser.id,
+    };
+    const { data, error } = isUuid(project.id)
+      ? await supabase
+          .from("projects")
+          .upsert(
+            {
+              id: project.id,
+              ...projectPayload,
+            },
+            { onConflict: "id" },
+          )
+          .select("id,owner_id,name,description,kind,color,board_columns")
+          .single()
+      : await supabase
+          .from("projects")
+          .insert(projectPayload)
+          .select("id,owner_id,name,description,kind,color,board_columns")
+          .single();
 
     if (error) {
       throw new Error(error.message);
@@ -3926,7 +3993,7 @@ export default function Home() {
 
     const owner = createCurrentUserMember(appUserId, appUserName, authEmail);
     let project: Project = {
-      id: createId("project"),
+      id: createUuid(),
       ownerId: appUserId,
       name,
       description: values.description.trim(),
@@ -3943,6 +4010,7 @@ export default function Home() {
       const { data, error } = await supabase
         .from("projects")
         .insert({
+          id: project.id,
           board_columns: project.columns,
           color: project.color,
           description: project.description,
@@ -3974,7 +4042,7 @@ export default function Home() {
       pendingInvites: newInvites,
     };
     const defaultCategory: TaskCategory = {
-      id: createId("category"),
+      id: createUuid(),
       projectId: project.id,
       name: values.kind === "team" ? "Shared" : "Focus",
       color: project.color,
@@ -4052,7 +4120,7 @@ export default function Home() {
       setSelectedTaskId("task-wireframes");
     } else {
       const project: Project = {
-        id: createId("project"),
+        id: createUuid(),
         ownerId: appUserId,
         name: "My first board",
         description: "",
@@ -4066,6 +4134,7 @@ export default function Home() {
       };
 
       setProjects([project]);
+      markProjectDirty(project.id);
       setCategories([]);
       setTasks([]);
       setSessions([]);
@@ -4160,7 +4229,7 @@ export default function Home() {
       sessionDurationMinutes * 60 - syncedRemainingSeconds,
     );
     const cancellation: PomodoroCancellation = {
-      id: createId("cancellation"),
+      id: createUuid(),
       userId: appUserId,
       projectId,
       taskId: task?.id ?? null,
@@ -6925,7 +6994,7 @@ function TaskDetailModal({
       subtasks: [
         ...task.subtasks,
         {
-          id: createId("subtask"),
+          id: createUuid(),
           title,
           done: false,
         },
@@ -6965,7 +7034,7 @@ function TaskDetailModal({
       comments: [
         ...task.comments,
         {
-          id: createId("comment"),
+          id: createUuid(),
           authorId: currentUserId,
           authorName: currentUserName,
           body,
