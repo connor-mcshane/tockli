@@ -55,7 +55,9 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import {
   buildRecentActivityDates,
   moveTaskWithCompletion,
+  reorderTaskInList,
   resolveActiveProjectId,
+  resolveSelectedTaskId,
   taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "@/lib/workspace-ui.mjs";
@@ -1186,6 +1188,7 @@ function workspaceToStoredState(
 async function loadRemoteWorkspaceSnapshot(
   authUser: User,
   preferredProjectId?: string,
+  preferredTaskId?: string,
 ): Promise<{ snapshot: WorkspaceSnapshot | null; plan: PlanTier; error?: string }> {
   if (!supabase) {
     return { plan: "free", snapshot: null };
@@ -1373,10 +1376,16 @@ async function loadRemoteWorkspaceSnapshot(
     (cancellationResult.data ?? []) as RemoteCancellationRow[]
   ).map(mapRemoteCancellation);
   const activeProjectId = resolveActiveProjectId(projects, preferredProjectId);
-  const firstOpenTask =
-    tasks.find((task) => task.projectId === activeProjectId && task.status !== "done") ??
-    tasks.find((task) => task.projectId === activeProjectId) ??
-    tasks[0];
+  const doneColumnId =
+    projects
+      .find((project) => project.id === activeProjectId)
+      ?.columns.find((column) => column.isDone)?.id ?? "done";
+  const selectedTaskId = resolveSelectedTaskId(
+    tasks,
+    activeProjectId,
+    preferredTaskId,
+    doneColumnId,
+  );
 
   return {
     plan,
@@ -1391,7 +1400,7 @@ async function loadRemoteWorkspaceSnapshot(
         sessions.length > 0 ||
         cancellations.length > 0,
       projects,
-      selectedTaskId: firstOpenTask?.id ?? "",
+      selectedTaskId,
       sessions,
       settings: mapRemoteSettings(settingsResult.data as RemoteSettingsRow | null),
       tasks,
@@ -1790,7 +1799,9 @@ export default function Home() {
         return;
       }
 
-      setAuthUser(data.session.user);
+      setAuthUser((current) =>
+        current?.id === data.session!.user.id ? current : data.session!.user,
+      );
       setAuthReady(true);
     }
 
@@ -1809,7 +1820,9 @@ export default function Home() {
         return;
       }
 
-      setAuthUser(session.user);
+      setAuthUser((current) =>
+        current?.id === session.user.id ? current : session.user,
+      );
       setAuthReady(true);
     });
 
@@ -1824,7 +1837,11 @@ export default function Home() {
   const applyWorkspaceSnapshot = useCallback(
     (
       snapshot: WorkspaceSnapshot,
-      options?: { preserveTimer?: boolean; requireFullRemoteSync?: boolean },
+      options?: {
+        preserveSelection?: boolean;
+        preserveTimer?: boolean;
+        requireFullRemoteSync?: boolean;
+      },
     ) => {
       const normalizedSettings = normalizeSettings(snapshot.settings);
       dirtyProjectIdsRef.current.clear();
@@ -1837,14 +1854,29 @@ export default function Home() {
       setSessions(snapshot.sessions);
       setCancellations(snapshot.cancellations);
       setSettings(normalizedSettings);
-      setActiveProjectId(snapshot.activeProjectId);
-      setSelectedTaskId(snapshot.selectedTaskId);
+      if (options?.preserveSelection) {
+        setActiveProjectId((current) =>
+          snapshot.projects.some((project) => project.id === current)
+            ? current
+            : snapshot.activeProjectId,
+        );
+        setSelectedTaskId((current) =>
+          snapshot.tasks.some((task) => task.id === current)
+            ? current
+            : snapshot.selectedTaskId,
+        );
+      } else {
+        setActiveProjectId(snapshot.activeProjectId);
+        setSelectedTaskId(snapshot.selectedTaskId);
+      }
       if (!options?.preserveTimer) {
         setFocusTaskId(snapshot.focusTaskId);
         setRemainingSeconds(normalizedSettings.focusMinutes * 60);
         setSessionDurationMinutes(normalizedSettings.focusMinutes);
       }
-      setTaskDraft(null);
+      if (!options?.preserveSelection) {
+        setTaskDraft(null);
+      }
       setOnboardingOpen(false);
       setHydrated(true);
     },
@@ -1897,6 +1929,7 @@ export default function Home() {
             await loadRemoteWorkspaceSnapshot(
               authUser,
               storedWorkspace?.workspace.activeProjectId,
+              storedWorkspace?.workspace.selectedTaskId,
             );
 
           if (!alive) {
@@ -2094,7 +2127,10 @@ export default function Home() {
         lastLocalStorageWorkspaceJsonRef.current = JSON.stringify(
           workspaceToStoredState(appliedWorkspace),
         );
-        applyWorkspaceSnapshot(workspace, { preserveTimer: isRunning });
+        applyWorkspaceSnapshot(workspace, {
+          preserveSelection: true,
+          preserveTimer: isRunning,
+        });
       } catch {
         setProjectNotice("Another Tockli tab sent state this tab could not read.");
       }
@@ -3205,24 +3241,38 @@ export default function Home() {
     );
   }
 
-  function moveTask(taskId: string, status: TaskStatus) {
+  function moveTask(
+    taskId: string,
+    status: TaskStatus,
+    targetTaskId?: string,
+    placement: "before" | "after" = "before",
+  ) {
     const task = tasks.find((item) => item.id === taskId);
     if (!task || !canEditProject(task.projectId)) {
       return;
     }
 
+    if (task.status === status && targetTaskId === taskId) {
+      return;
+    }
+
     setTasks((current) =>
-      current.map((task) =>
-        task.id === taskId
-          ? moveTaskWithCompletion(task, status, activeBoardColumns)
-          : task,
+      reorderTaskInList(
+        current,
+        taskId,
+        status,
+        activeBoardColumns,
+        targetTaskId ?? null,
+        placement,
       ),
     );
-    markTaskDirty(taskId);
+    tasks
+      .filter((item) => item.projectId === task.projectId)
+      .forEach((item) => markTaskDirty(item.id));
 
-    if (task?.status !== status) {
+    if (task.status !== status) {
       trackEvent("task_status_changed", {
-        from_status: task?.status,
+        from_status: task.status,
         project_kind: activeProject?.kind ?? "unknown",
         to_status: status,
       });
@@ -5878,7 +5928,12 @@ function BoardView({
   onRestoreColumn: (columnId: string) => void;
   onSelectTask: (taskId: string) => void;
   onStartTask: (taskId: string, minutes: number) => void;
-  onTaskStatusChange: (taskId: string, status: TaskStatus) => void;
+  onTaskStatusChange: (
+    taskId: string,
+    status: TaskStatus,
+    targetTaskId?: string,
+    placement?: "before" | "after",
+  ) => void;
   onToggleTag: (tag: string) => void;
   progressPercent: number;
   projectTasks: Task[];
@@ -5892,6 +5947,7 @@ function BoardView({
   const [columnDropTargetId, setColumnDropTargetId] = useState<string | null>(
     null,
   );
+  const [taskDropTargetId, setTaskDropTargetId] = useState<string | null>(null);
   const [newColumnOpen, setNewColumnOpen] = useState(false);
   const [newColumnTitle, setNewColumnTitle] = useState("");
   const [archivedPanelOpen, setArchivedPanelOpen] = useState(false);
@@ -5914,6 +5970,7 @@ function BoardView({
   function clearDragState() {
     pointerTaskIdRef.current = null;
     setDraggedTaskId(null);
+    setTaskDropTargetId(null);
   }
 
   function clearColumnDragState() {
@@ -5956,14 +6013,46 @@ function BoardView({
     setColumnTitleDraft("");
   }
 
-  function dropTask(status: TaskStatus, taskId = draggedTaskId) {
-    const targetTaskId = taskId ?? pointerTaskIdRef.current;
+  function getTaskDropTarget(event: {
+    clientX: number;
+    clientY: number;
+    target: EventTarget | null;
+  }) {
+    const pointedElement = document.elementFromPoint(event.clientX, event.clientY);
+    const card =
+      pointedElement instanceof HTMLElement
+        ? pointedElement.closest<HTMLElement>("[data-task-id]")
+        : event.target instanceof HTMLElement
+          ? event.target.closest<HTMLElement>("[data-task-id]")
+          : null;
 
-    if (!targetTaskId) {
+    if (!card?.dataset.taskId) {
+      return { placement: "before" as const, taskId: undefined };
+    }
+
+    const bounds = card.getBoundingClientRect();
+    return {
+      placement:
+        event.clientY >= bounds.top + bounds.height / 2
+          ? ("after" as const)
+          : ("before" as const),
+      taskId: card.dataset.taskId,
+    };
+  }
+
+  function dropTask(
+    status: TaskStatus,
+    taskId = draggedTaskId,
+    targetTaskId?: string,
+    placement: "before" | "after" = "before",
+  ) {
+    const sourceTaskId = taskId ?? pointerTaskIdRef.current;
+
+    if (!sourceTaskId) {
       return;
     }
 
-    onTaskStatusChange(targetTaskId, status);
+    onTaskStatusChange(sourceTaskId, status, targetTaskId, placement);
     clearDragState();
   }
 
@@ -6227,6 +6316,14 @@ function BoardView({
 
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
+                if (draggedTaskId) {
+                  const target = getTaskDropTarget(event);
+                  setTaskDropTargetId(
+                    target.taskId && target.taskId !== draggedTaskId
+                      ? target.taskId
+                      : null,
+                  );
+                }
               }}
               onDragEnd={(event) => {
                 if (!canEdit) {
@@ -6279,12 +6376,17 @@ function BoardView({
                   return;
                 }
 
+                const sourceTaskId =
+                  event.dataTransfer.getData("text/plain") || draggedTaskId;
+                const target = getTaskDropTarget(event);
                 dropTask(
                   column.id,
-                  event.dataTransfer.getData("text/plain") || draggedTaskId,
+                  sourceTaskId,
+                  target.taskId,
+                  target.placement,
                 );
               }}
-              onPointerUp={() => {
+              onPointerUp={(event) => {
                 if (!canEdit) {
                   return;
                 }
@@ -6295,7 +6397,13 @@ function BoardView({
                   return;
                 }
 
-                dropTask(column.id, pointerTaskIdRef.current ?? draggedTaskId);
+                const target = getTaskDropTarget(event);
+                dropTask(
+                  column.id,
+                  pointerTaskIdRef.current ?? draggedTaskId,
+                  target.taskId,
+                  target.placement,
+                );
               }}
               onPointerDown={(event) => {
                 if (!canEdit) {
@@ -6441,6 +6549,7 @@ function BoardView({
                       (category) => category.id === task.categoryId,
                     )}
                     defaultFocusMinutes={defaultFocusMinutes}
+                    isDropTarget={taskDropTargetId === task.id}
                     isFocusTask={isTimerRunning && focusTaskId === task.id}
                     isSelected={selectedTaskId === task.id}
                     isTimerRunning={isTimerRunning}
@@ -6542,6 +6651,7 @@ function TaskCard({
   canEdit,
   category,
   defaultFocusMinutes,
+  isDropTarget,
   isFocusTask,
   isSelected,
   isTimerRunning,
@@ -6555,6 +6665,7 @@ function TaskCard({
   canEdit: boolean;
   category?: TaskCategory;
   defaultFocusMinutes: number;
+  isDropTarget: boolean;
   isFocusTask: boolean;
   isSelected: boolean;
   isTimerRunning: boolean;
@@ -6652,12 +6763,15 @@ function TaskCard({
       className={`relative overflow-visible rounded-lg border bg-[var(--surface)] transition-[transform,box-shadow,border-color] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-[var(--shadow-hover)] motion-reduce:transform-none ${
         canEdit ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
       } ${
-        isFocusTask
+        isDropTarget
+          ? "border-[var(--accent)] ring-2 ring-[var(--accent-ring-soft)]"
+          : isFocusTask
           ? "border-[var(--accent)] shadow-[var(--shadow-accent-soft)]"
           : isSelected
           ? "border-[var(--accent)] shadow-[var(--shadow-accent-soft)]"
           : "border-[var(--border)] hover:border-[var(--border-strong)]"
       }`}
+      data-task-id={task.id}
       draggable={canEdit}
       style={{
         borderLeftColor: category?.color ?? undefined,
