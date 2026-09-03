@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   buildRecentActivityDates,
   moveTaskWithCompletion,
+  reorderTaskInList,
   resolveActiveProjectId,
+  resolveSelectedTaskId,
   taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "../lib/workspace-ui.mjs";
@@ -15,6 +17,24 @@ test("keeps a persisted project when it still exists remotely", () => {
   assert.equal(resolveActiveProjectId(projects, "remembered"), "remembered");
   assert.equal(resolveActiveProjectId(projects, "removed"), "first");
   assert.equal(resolveActiveProjectId([], "remembered"), "");
+});
+
+test("keeps a persisted selected card when remote data refreshes", () => {
+  const tasks = [
+    { id: "top-card", projectId: "project-1", status: "todo" },
+    { id: "open-card", projectId: "project-1", status: "active" },
+    { id: "other-project", projectId: "project-2", status: "todo" },
+  ];
+
+  assert.equal(
+    resolveSelectedTaskId(tasks, "project-1", "open-card"),
+    "open-card",
+  );
+  assert.equal(
+    resolveSelectedTaskId(tasks, "project-1", "other-project"),
+    "top-card",
+  );
+  assert.equal(resolveSelectedTaskId(tasks, "missing", "open-card"), "");
 });
 
 test("task search matches useful card fields and rejects unrelated queries", () => {
@@ -63,6 +83,51 @@ test("task completion timestamps follow the project's done column", () => {
 
   const reopened = moveTaskWithCompletion(completed, "todo", columns);
   assert.equal(reopened.completedAt, null);
+});
+
+test("reorders cards within a stack and across stacks", () => {
+  const columns = [
+    { id: "todo" },
+    { id: "done", isDone: true },
+  ];
+  const tasks = [
+    { id: "first", projectId: "project-1", status: "todo" },
+    { id: "second", projectId: "project-1", status: "todo" },
+    { id: "finished", projectId: "project-1", status: "done" },
+    { id: "other-project", projectId: "project-2", status: "todo" },
+  ];
+
+  const reordered = reorderTaskInList(
+    tasks,
+    "second",
+    "todo",
+    columns,
+    "first",
+    "before",
+  );
+  assert.deepEqual(
+    reordered.map((task) => task.id),
+    ["second", "first", "finished", "other-project"],
+  );
+
+  const completedAt = "2026-09-03T10:00:00.000Z";
+  const completed = reorderTaskInList(
+    reordered,
+    "first",
+    "done",
+    columns,
+    "finished",
+    "after",
+    completedAt,
+  );
+  assert.deepEqual(
+    completed.map((task) => task.id),
+    ["second", "finished", "first", "other-project"],
+  );
+  assert.equal(
+    completed.find((task) => task.id === "first")?.completedAt,
+    completedAt,
+  );
 });
 
 test("deleting a reordered done column dirties moved and newly completed tasks", () => {
