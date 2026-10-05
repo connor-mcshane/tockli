@@ -2,6 +2,9 @@
   "name": "tockli",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "tockli": "./cli/tockli.mjs"
+  },
   "packageManager": "pnpm@11.9.0",
   "engines": {
     "node": ">=22.16.0"
@@ -14,7 +17,9 @@
     "test": "NEXT_PUBLIC_SUPABASE_URL=https://test.supabase.co NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_test WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build && NEXT_PUBLIC_SUPABASE_URL=https://test.supabase.co NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_test node --test tests/rendered-html.test.mjs tests/workspace-ui.test.mjs tests/focus-score.test.mjs tests/focus-score-estimator.test.mjs tests/analytics-privacy.test.mjs",
     "test:prod": "NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-https://test.supabase.co} NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_test} pnpm run build:netlify && NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-https://test.supabase.co} NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-sb_publishable_test} node tests/production-smoke.mjs",
     "test:db": "node --test tests/local-supabase.test.mjs",
-    "test:tockli": "node --test tests/tockli-auth.test.mjs tests/tockli-api.test.mjs tests/local-integration-safety.test.mjs",
+    "test:tockli": "node --test tests/tockli-auth.test.mjs tests/tockli-api.test.mjs tests/local-integration-safety.test.mjs tests/tockli-cli.test.mjs",
+    "test:tockli:cli": "node --test tests/tockli-cli.test.mjs",
+    "test:tockli:cli:integration": "node --test tests/tockli-cli.local.test.mjs",
     "test:tockli:integration": "node --test tests/tockli-api.local.test.mjs",
     "test:ui": "node --test tests/workspace-ui.test.mjs",
     "test:all": "pnpm test && pnpm run test:db",
