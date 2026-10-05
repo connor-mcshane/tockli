@@ -395,6 +395,30 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   });
   assert.equal(category.name, "Research");
 
+  const [forcedRevisionTask] = await withAuthenticatedUser(ownerId, async (tx) => {
+    return tx`
+      insert into public.tasks (
+        project_id,
+        category_id,
+        title,
+        created_by,
+        revision
+      )
+      values (
+        ${teamProject.id},
+        ${category.id},
+        'Attempt to force an initial revision',
+        ${ownerId},
+        999999
+      )
+      returning id, revision
+    `;
+  });
+  assert.equal(forcedRevisionTask.revision, "1");
+  await withAuthenticatedUser(ownerId, async (tx) =>
+    tx`delete from public.tasks where id = ${forcedRevisionTask.id}`,
+  );
+
   const [task] = await withAuthenticatedUser(ownerId, async (tx) => {
     const [createdTask] = await tx`
       insert into public.tasks (

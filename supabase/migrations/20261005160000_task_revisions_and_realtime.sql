@@ -7,7 +7,9 @@ language plpgsql
 set search_path = public
 as $$
 begin
-  if (to_jsonb(new) - 'revision') is distinct from (to_jsonb(old) - 'revision') then
+  if tg_op = 'INSERT' then
+    new.revision := 1;
+  elsif (to_jsonb(new) - 'revision') is distinct from (to_jsonb(old) - 'revision') then
     new.revision := old.revision + 1;
   else
     new.revision := old.revision;
@@ -18,7 +20,7 @@ end;
 $$;
 
 create trigger tasks_bump_revision
-before update on public.tasks
+before insert or update on public.tasks
 for each row execute function public.bump_task_revision();
 
 do $$
