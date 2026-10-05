@@ -110,6 +110,43 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
   await requireLocalDatabase();
   await resetTestData();
 
+  const realtimeTables = await sql`
+    select tablename
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename in (
+        'projects',
+        'project_members',
+        'project_invitations',
+        'task_categories',
+        'tasks',
+        'task_tags',
+        'task_subtasks',
+        'task_comments',
+        'focus_sessions',
+        'pomodoro_cancellations',
+        'user_settings'
+      )
+    order by tablename
+  `;
+  assert.deepEqual(
+    realtimeTables.map((table) => table.tablename),
+    [
+      'focus_sessions',
+      'pomodoro_cancellations',
+      'project_invitations',
+      'project_members',
+      'projects',
+      'task_categories',
+      'task_comments',
+      'task_subtasks',
+      'task_tags',
+      'tasks',
+      'user_settings',
+    ],
+  );
+
   await withAnon(
     async (tx) => tx`
       insert into public.marketing_signups (
@@ -382,44 +419,64 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
         0,
         ${ownerId}
       )
-      returning id, status, category_id
+      returning id, status, category_id, revision
     `;
 
     return [createdTask];
   });
   assert.equal(task.status, "todo");
   assert.equal(task.category_id, category.id);
+  assert.equal(task.revision, "1");
   const [movedTask] = await withAuthenticatedUser(ownerId, async (tx) =>
     tx`
       update public.tasks
       set status = 'waiting'
       where id = ${task.id}
-      returning status
+        and revision = ${task.revision}
+      returning status, revision
     `,
   );
   assert.equal(movedTask.status, "waiting");
+  assert.equal(movedTask.revision, "2");
+
+  const staleTaskUpdates = await withAuthenticatedUser(ownerId, async (tx) =>
+    tx`
+      update public.tasks
+      set title = 'Stale owner update should not apply'
+      where id = ${task.id}
+        and revision = ${task.revision}
+      returning id
+    `,
+  );
+  assert.equal(staleTaskUpdates.length, 0);
 
   const [completedTask] = await withAuthenticatedUser(ownerId, async (tx) =>
     tx`
       update public.tasks
-      set status = 'shipped'
+      set
+        status = 'shipped',
+        revision = 999999
       where id = ${task.id}
-      returning status, completed_at
+        and revision = ${movedTask.revision}
+      returning status, completed_at, revision
     `,
   );
   assert.equal(completedTask.status, "shipped");
   assert.ok(completedTask.completed_at instanceof Date);
+  assert.equal(completedTask.revision, "3");
 
   const [reopenedTask] = await withAuthenticatedUser(ownerId, async (tx) =>
     tx`
       update public.tasks
       set status = 'active'
       where id = ${task.id}
-      returning status, completed_at
+        and revision = ${completedTask.revision}
+      returning status, completed_at, revision
     `,
   );
   assert.equal(reopenedTask.status, "active");
   assert.equal(reopenedTask.completed_at, null);
+  assert.equal(reopenedTask.revision, "4");
 
   const [editorUpdatedTask] = await withAuthenticatedUser(editorId, async (tx) =>
     tx`
@@ -428,21 +485,35 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
         status = 'active',
         title = 'Editor refined shared checklist'
       where id = ${task.id}
-      returning status, title
+        and revision = ${reopenedTask.revision}
+      returning status, title, revision
     `,
   );
   assert.equal(editorUpdatedTask.status, "active");
   assert.equal(editorUpdatedTask.title, "Editor refined shared checklist");
+  assert.equal(editorUpdatedTask.revision, "5");
 
   const viewerTaskUpdates = await withAuthenticatedUser(collaboratorId, async (tx) =>
     tx`
       update public.tasks
       set title = 'Viewer should not edit this'
       where id = ${task.id}
+        and revision = ${editorUpdatedTask.revision}
       returning id
     `,
   );
   assert.equal(viewerTaskUpdates.length, 0);
+
+  const outsiderTaskUpdates = await withAuthenticatedUser(outsiderId, async (tx) =>
+    tx`
+      update public.tasks
+      set title = 'Outsider should not edit this'
+      where id = ${task.id}
+        and revision = ${editorUpdatedTask.revision}
+      returning id
+    `,
+  );
+  assert.equal(outsiderTaskUpdates.length, 0);
 
   await withAuthenticatedUser(ownerId, async (tx) => {
     const [subtask] = await tx`
