@@ -182,12 +182,12 @@ test("listTasks uses explicit columns and the bounded default limit", async () =
   );
 });
 
-test("createTask defaults to the first active board column", async () => {
+test("createTask defaults to the first unarchived board column even when it is done", async () => {
   const projectRow = {
     board_columns: [
       { id: "archive", title: "Archive", archived: true },
-      { id: "queue", title: "Queue" },
       { id: "finished", title: "Finished", isDone: true },
+      { id: "queue", title: "Queue" },
     ],
     id: PROJECT_ID,
   };
@@ -205,7 +205,7 @@ test("createTask defaults to the first active board column", async () => {
     revision: 1,
     sort_order: 0,
     spent_minutes: 0,
-    status: "queue",
+    status: "finished",
     title: "First task",
     updated_at: "2026-10-01T00:00:00Z",
   };
@@ -216,10 +216,10 @@ test("createTask defaults to the first active board column", async () => {
   const api = createTockliApi({ client });
 
   const result = await api.createTask({ projectId: PROJECT_ID, title: " First task " });
-  assert.equal(result.status, "queue");
+  assert.equal(result.status, "finished");
   assert.equal(result.revision, 1);
   const insert = client.calls[1].operations.find(([name]) => name === "insert");
-  assert.equal(insert[1].status, "queue");
+  assert.equal(insert[1].status, "finished");
   assert.equal(insert[1].title, "First task");
   assert.equal(insert[1].created_by, USER_ID);
 });

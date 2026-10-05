@@ -63,6 +63,42 @@ test("Supabase configuration uses documented precedence without reading service 
   assert.throws(() => resolveSupabaseConfig({}), { code: "TOCKLI_CONFIG" });
 });
 
+test("Supabase configuration rejects modern secret keys and legacy service-role JWTs", () => {
+  const serviceRolePayload = Buffer.from(
+    JSON.stringify({ exp: 2_000_000_000, role: "service_role" }),
+  ).toString("base64url");
+  const serviceRoleJwt = `header.${serviceRolePayload}.signature`;
+
+  for (const key of ["sb_secret_do-not-use", serviceRoleJwt]) {
+    assert.throws(
+      () =>
+        resolveSupabaseConfig({
+          TOCKLI_SUPABASE_KEY: key,
+          TOCKLI_SUPABASE_URL: "https://example.supabase.co",
+        }),
+      (error) => {
+        assert.equal(error.code, "TOCKLI_CONFIG");
+        assert.equal(error.message.includes(key), false);
+        return true;
+      },
+    );
+  }
+
+  const anonPayload = Buffer.from(
+    JSON.stringify({ exp: 2_000_000_000, role: "anon" }),
+  ).toString("base64url");
+  assert.deepEqual(
+    resolveSupabaseConfig({
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: `header.${anonPayload}.signature`,
+      NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
+    }),
+    {
+      key: `header.${anonPayload}.signature`,
+      url: "https://example.supabase.co",
+    },
+  );
+});
+
 test("config path honors TOCKLI_CONFIG_DIR then platform conventions", () => {
   assert.equal(
     resolveTockliConfigDir({

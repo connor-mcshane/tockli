@@ -3,9 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createClient } from "@supabase/supabase-js";
 import postgres from "postgres";
 
 import { createTockliApi } from "../lib/tockli-api.mjs";
+import {
+  assertLocalIntegrationEndpoints,
+  createBoundedFetch,
+  withTimeout,
+} from "./local-integration-safety.mjs";
 
 const API_URL = process.env.TOCKLI_SUPABASE_URL ?? "http://127.0.0.1:54321";
 const PUBLIC_KEY =
@@ -24,15 +30,31 @@ const EDITOR_ID = "00000000-0000-4000-8000-00000000b002";
 const VIEWER_ID = "00000000-0000-4000-8000-00000000b003";
 const TEAM_PROJECT_ID = "10000000-0000-4000-8000-00000000b001";
 const TEST_USER_IDS = [OWNER_ID, EDITOR_ID, VIEWER_ID];
+const REQUEST_TIMEOUT_MS = 5_000;
+const DATABASE_OPERATION_TIMEOUT_MS = 15_000;
+const INTEGRATION_TEST_TIMEOUT_MS = 45_000;
 
-const sql = postgres(DATABASE_URL, { idle_timeout: 1, max: 1 });
+assertLocalIntegrationEndpoints({ apiUrl: API_URL, databaseUrl: DATABASE_URL });
+
+const boundedFetch = createBoundedFetch(globalThis.fetch, REQUEST_TIMEOUT_MS);
+const sql = postgres(DATABASE_URL, {
+  connect_timeout: 3,
+  connection: {
+    lock_timeout: REQUEST_TIMEOUT_MS,
+    statement_timeout: REQUEST_TIMEOUT_MS,
+  },
+  idle_timeout: 1,
+  max: 1,
+});
 
 async function requireLocalStack() {
   try {
-    await sql`select 1`;
-    const response = await fetch(`${API_URL}/auth/v1/health`, {
-      signal: AbortSignal.timeout(3_000),
-    });
+    await withTimeout(
+      sql`select 1`,
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Local database health check",
+    );
+    const response = await boundedFetch(`${API_URL}/auth/v1/health`);
     assert.equal(response.ok, true);
   } catch (error) {
     throw new Error(
@@ -43,14 +65,15 @@ async function requireLocalStack() {
 }
 
 async function prepareUsers() {
-  await sql.begin(async (tx) => {
-    await tx`delete from auth.users where id in ${tx(TEST_USER_IDS)} `;
-    for (const [id, email, displayName] of [
-      [OWNER_ID, OWNER_EMAIL, "API Owner"],
-      [EDITOR_ID, EDITOR_EMAIL, "API Editor"],
-      [VIEWER_ID, VIEWER_EMAIL, "API Viewer"],
-    ]) {
-      await tx`
+  await withTimeout(
+    sql.begin(async (tx) => {
+      await tx`delete from auth.users where id in ${tx(TEST_USER_IDS)} `;
+      for (const [id, email, displayName] of [
+        [OWNER_ID, OWNER_EMAIL, "API Owner"],
+        [EDITOR_ID, EDITOR_EMAIL, "API Editor"],
+        [VIEWER_ID, VIEWER_EMAIL, "API Viewer"],
+      ]) {
+        await tx`
         insert into auth.users (
           id,
           instance_id,
@@ -85,8 +108,8 @@ async function prepareUsers() {
           now()
         )
       `;
-    }
-    await tx`
+      }
+      await tx`
       insert into public.projects (
         id,
         owner_id,
@@ -106,15 +129,18 @@ async function prepareUsers() {
         ]'::jsonb
       )
     `;
-    await tx`
+      await tx`
       insert into public.project_members (project_id, user_id, role)
       values (${TEAM_PROJECT_ID}::uuid, ${EDITOR_ID}::uuid, 'editor')
     `;
-    await tx`
+      await tx`
       insert into public.project_members (project_id, user_id, role)
       values (${TEAM_PROJECT_ID}::uuid, ${VIEWER_ID}::uuid, 'viewer')
     `;
-  });
+    }),
+    DATABASE_OPERATION_TIMEOUT_MS,
+    "Local database fixture setup",
+  );
 }
 
 async function makeApi(configDir) {
@@ -125,17 +151,29 @@ async function makeApi(configDir) {
       TOCKLI_SUPABASE_KEY: PUBLIC_KEY,
       TOCKLI_SUPABASE_URL: API_URL,
     },
+    clientFactory(url, key, options) {
+      return createClient(url, key, {
+        ...options,
+        global: { ...options.global, fetch: boundedFetch },
+      });
+    },
   });
   return api;
 }
 
-test("shared API works through local Auth/PostgREST as owner, editor, and viewer", async (t) => {
+test("shared API works through local Auth/PostgREST as owner, editor, and viewer", {
+  timeout: INTEGRATION_TEST_TIMEOUT_MS,
+}, async (t) => {
   await requireLocalStack();
   await prepareUsers();
   const configRoot = await mkdtemp(path.join(tmpdir(), "tockli-api-local-"));
 
   t.after(async () => {
-    await sql`delete from auth.users where id in ${sql(TEST_USER_IDS)}`;
+    await withTimeout(
+      sql`delete from auth.users where id in ${sql(TEST_USER_IDS)}`,
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Local database fixture cleanup",
+    );
     await rm(configRoot, { force: true, recursive: true });
   });
 
@@ -226,5 +264,5 @@ test("shared API works through local Auth/PostgREST as owner, editor, and viewer
 });
 
 test.after(async () => {
-  await sql.end();
+  await withTimeout(sql.end({ timeout: 5 }), 6_000, "Database client shutdown");
 });
