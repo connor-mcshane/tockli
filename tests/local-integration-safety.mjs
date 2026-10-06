@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 function integrationSafetyError() {
   return new Error(
     "Refusing to run local integration tests: API and database endpoints must use loopback hosts.",
@@ -6,12 +8,17 @@ function integrationSafetyError() {
 
 function isLoopbackHostname(hostname) {
   const normalized = hostname.toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized === "::1" ||
-    normalized === "[::1]" ||
-    normalized.startsWith("127.")
-  );
+  const unwrapped =
+    normalized.startsWith("[") && normalized.endsWith("]")
+      ? normalized.slice(1, -1)
+      : normalized;
+  if (unwrapped === "localhost" || unwrapped === "::1") {
+    return true;
+  }
+  if (isIP(unwrapped) !== 4) {
+    return false;
+  }
+  return Number(unwrapped.split(".")[0]) === 127;
 }
 
 function requireLoopbackUrl(value, protocols) {
@@ -21,14 +28,25 @@ function requireLoopbackUrl(value, protocols) {
   } catch {
     throw integrationSafetyError();
   }
-  if (!protocols.has(url.protocol) || !isLoopbackHostname(url.hostname)) {
+  const endpointOverride = [...url.searchParams.keys()].some((key) =>
+    ["host", "hostaddr", "hostname"].includes(key.toLowerCase()),
+  );
+  if (
+    !protocols.has(url.protocol) ||
+    !isLoopbackHostname(url.hostname) ||
+    endpointOverride
+  ) {
     throw integrationSafetyError();
   }
 }
 
+export function assertLocalDatabaseEndpoint(databaseUrl) {
+  requireLoopbackUrl(databaseUrl, new Set(["postgres:", "postgresql:"]));
+}
+
 export function assertLocalIntegrationEndpoints({ apiUrl, databaseUrl }) {
   requireLoopbackUrl(apiUrl, new Set(["http:", "https:"]));
-  requireLoopbackUrl(databaseUrl, new Set(["postgres:", "postgresql:"]));
+  assertLocalDatabaseEndpoint(databaseUrl);
 }
 
 export async function withTimeout(work, timeoutMs, label) {
@@ -46,6 +64,33 @@ export async function withTimeout(work, timeoutMs, label) {
     return await Promise.race([Promise.resolve(work), timeout]);
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+
+export async function runCleanupSteps(
+  steps,
+  { message = "Integration cleanup failed.", timeoutMs = 5_000 } = {},
+) {
+  if (!Array.isArray(steps)) {
+    throw new TypeError("steps must be an array");
+  }
+
+  const errors = [];
+  for (const step of steps) {
+    const label = step?.label || "Cleanup step";
+    try {
+      await withTimeout(
+        Promise.resolve().then(() => step.run()),
+        step.timeoutMs ?? timeoutMs,
+        label,
+      );
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  if (errors.length) {
+    throw new AggregateError(errors, message);
   }
 }
 
@@ -71,4 +116,3 @@ export function createBoundedFetch(fetchImplementation, timeoutMs) {
     }
   };
 }
-

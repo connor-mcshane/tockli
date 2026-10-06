@@ -65,13 +65,19 @@ import {
   WORKSPACE_REALTIME_TABLES,
   acknowledgeTaskWrite,
   clearAcknowledgedDirtyWrite,
+  clearPermanentDependentWrite,
   createWorkspaceInvalidationScheduler,
   deleteTaskWithRevision,
+  detachMissingTaskReferences,
   executeIdempotentTaskInsert,
   hasPendingWorkspaceWrites,
+  insertLegacyUnsyncedTask,
   mergeRemoteTasksPreservingTimer,
+  normalizeStoredTaskRevision,
+  runGuardedWorkspaceRefresh,
   scheduleWorkspaceSyncRetry,
   taskIdForTimerRecord,
+  writeTaskWithRevision,
 } from "@/lib/workspace-sync.mjs";
 
 type View = "board" | "timer" | "analytics" | "settings";
@@ -1512,12 +1518,7 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
       estimate: task.estimate ?? initialSettings.focusMinutes,
       spent: task.spent ?? 0,
       priority: task.priority ?? "medium",
-      revision: normalizeInteger(
-        task.revision,
-        0,
-        Number.MAX_SAFE_INTEGER,
-        isUuid(id) ? 1 : 0,
-      ),
+      revision: normalizeStoredTaskRevision(task.revision),
       remoteDetached: Boolean(task.remoteDetached),
       tags: task.tags?.map(normalizeTag).filter(Boolean) ?? [],
       categoryId: task.categoryId ?? null,
@@ -1783,6 +1784,8 @@ export default function Home() {
   const dirtyCancellationIdsRef = useRef(new Map<string, number>());
   const committedDraftTaskIdsRef = useRef(new Set<string>());
   const pendingTaskInsertIdsRef = useRef(new Map<string, string>());
+  const quarantinedSessionIdsRef = useRef(new Set<string>());
+  const quarantinedCancellationIdsRef = useRef(new Set<string>());
   const remoteSyncInFlightRef = useRef(false);
   const remoteSyncQueuedRef = useRef(false);
   const remoteSyncRetryAttemptRef = useRef(0);
@@ -1792,6 +1795,7 @@ export default function Home() {
   >(null);
   const focusTaskIdRef = useRef(focusTaskId);
   const isRunningRef = useRef(isRunning);
+  const authenticatedUserIdRef = useRef<string | null>(authUser?.id ?? null);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -1820,6 +1824,10 @@ export default function Home() {
   }, [focusTaskId, isRunning]);
 
   useEffect(() => {
+    authenticatedUserIdRef.current = authUser?.id ?? null;
+  }, [authUser?.id]);
+
+  useEffect(() => {
     if (!supabase) {
       return;
     }
@@ -1840,6 +1848,7 @@ export default function Home() {
       }
 
       if (!data.session) {
+        authenticatedUserIdRef.current = null;
         const nextPath = `${window.location.pathname}${window.location.search}`;
         window.location.replace(
           `/login?next=${encodeURIComponent(
@@ -1849,6 +1858,7 @@ export default function Home() {
         return;
       }
 
+      authenticatedUserIdRef.current = data.session.user.id;
       setAuthUser((current) =>
         current?.id === data.session!.user.id ? current : data.session!.user,
       );
@@ -1865,11 +1875,13 @@ export default function Home() {
       }
 
       if (!session) {
+        authenticatedUserIdRef.current = null;
         const nextPath = `${window.location.pathname}${window.location.search}`;
         window.location.replace(`/login?next=${encodeURIComponent(nextPath)}`);
         return;
       }
 
+      authenticatedUserIdRef.current = session.user.id;
       setAuthUser((current) =>
         current?.id === session.user.id ? current : session.user,
       );
@@ -1900,6 +1912,8 @@ export default function Home() {
       dirtySettingsRef.current.clear();
       dirtySessionIdsRef.current.clear();
       dirtyCancellationIdsRef.current.clear();
+      quarantinedSessionIdsRef.current.clear();
+      quarantinedCancellationIdsRef.current.clear();
       pendingTaskInsertIdsRef.current.clear();
       remoteSyncRetryAttemptRef.current = 0;
       if (remoteSyncRetryTimeoutRef.current !== null) {
@@ -2263,6 +2277,7 @@ export default function Home() {
         const categoryIdMap = new Map<string, string>();
         const taskIdMap = new Map<string, string>();
         const conflictedTaskIds = new Set<string>();
+        const missingTaskIds = new Set<string>();
         const subtaskIdMap = new Map<string, string>();
         const commentIdMap = new Map<string, string>();
         const sessionIdMap = new Map<string, string>();
@@ -2526,35 +2541,97 @@ export default function Home() {
           };
 
           if (isUuid(task.id) && task.revision > 0) {
-            const { data, error } = await supabase!
-              .from("tasks")
-              .update(taskPayload)
-              .eq("id", task.id)
-              .eq("revision", task.revision)
-              .select("id,revision")
-              .maybeSingle();
-            if (error) {
-              throw new Error(error.message);
-            }
-            if (!data) {
-              dirtyTaskIdsRef.current.delete(task.id);
+            const writeResult = await writeTaskWithRevision({
+              readCurrent: () =>
+                supabase!
+                  .from("tasks")
+                  .select("id,revision")
+                  .eq("id", task.id)
+                  .maybeSingle(),
+              update: () =>
+                supabase!
+                  .from("tasks")
+                  .update(taskPayload)
+                  .eq("id", task.id)
+                  .eq("revision", task.revision)
+                  .select("id,revision")
+                  .maybeSingle(),
+            });
+            if (writeResult.status !== "updated") {
+              const capturedVersion = dirtyTaskIds.get(task.id);
+              if (capturedVersion !== undefined) {
+                clearAcknowledgedDirtyWrite(
+                  dirtyTaskIdsRef.current,
+                  task.id,
+                  capturedVersion,
+                );
+              }
               conflictedTaskIds.add(task.id);
+              if (writeResult.status === "missing") {
+                missingTaskIds.add(task.id);
+              }
               continue;
             }
             acknowledgeRemoteTask(
               task.id,
-              data.id,
+              writeResult.task.id,
               normalizeInteger(
-                Number(data.revision),
+                Number(writeResult.task.revision),
                 1,
                 Number.MAX_SAFE_INTEGER,
                 task.revision,
               ),
             );
+          } else if (isUuid(task.id)) {
+            const migrationResult = await insertLegacyUnsyncedTask({
+              findExisting: () =>
+                supabase!
+                  .from("tasks")
+                  .select("id,revision")
+                  .eq("id", task.id)
+                  .maybeSingle(),
+              insert: () =>
+                supabase!
+                  .from("tasks")
+                  .insert({
+                    id: task.id,
+                    ...taskPayload,
+                    created_by: syncAuthUser.id,
+                  })
+                  .select("id,revision")
+                  .single(),
+              lookup: () =>
+                supabase!
+                  .from("tasks")
+                  .select("id,revision")
+                  .eq("id", task.id)
+                  .maybeSingle(),
+            });
+            if (migrationResult.status === "conflict") {
+              const capturedVersion = dirtyTaskIds.get(task.id);
+              if (capturedVersion !== undefined) {
+                clearAcknowledgedDirtyWrite(
+                  dirtyTaskIdsRef.current,
+                  task.id,
+                  capturedVersion,
+                );
+              }
+              conflictedTaskIds.add(task.id);
+              continue;
+            }
+            acknowledgeRemoteTask(
+              task.id,
+              migrationResult.task.id,
+              normalizeInteger(
+                Number(migrationResult.task.revision),
+                1,
+                Number.MAX_SAFE_INTEGER,
+                1,
+              ),
+            );
           } else {
-            const stableTaskId = isUuid(task.id)
-              ? task.id
-              : pendingTaskInsertIdsRef.current.get(task.id) ?? createUuid();
+            const stableTaskId =
+              pendingTaskInsertIdsRef.current.get(task.id) ?? createUuid();
             pendingTaskInsertIdsRef.current.set(task.id, stableTaskId);
             const data = await executeIdempotentTaskInsert({
               insert: () =>
@@ -2587,6 +2664,15 @@ export default function Home() {
           }
 
           syncedEditableTasks.push(task);
+        }
+
+        if (missingTaskIds.size) {
+          setSessions((current) =>
+            detachMissingTaskReferences(current, missingTaskIds).records,
+          );
+          setCancellations((current) =>
+            detachMissingTaskReferences(current, missingTaskIds).records,
+          );
         }
 
         if (conflictedTaskIds.size) {
@@ -2741,6 +2827,9 @@ export default function Home() {
         }
 
         for (const session of sessions) {
+          if (quarantinedSessionIdsRef.current.has(session.id)) {
+            continue;
+          }
           if (session.userId && session.userId !== syncAuthUser.id) {
             continue;
           }
@@ -2760,7 +2849,10 @@ export default function Home() {
             continue;
           }
 
-          const mappedTaskId = session.taskId ? mapId(session.taskId, taskIdMap) : null;
+          const mappedTaskId =
+            session.taskId && !missingTaskIds.has(session.taskId)
+              ? mapId(session.taskId, taskIdMap)
+              : null;
           const sessionPayload = {
             completed_at: session.completedAt,
             minutes: normalizeInteger(session.minutes, 1, 480, settings.focusMinutes),
@@ -2781,7 +2873,35 @@ export default function Home() {
                 { onConflict: "id" },
               );
             if (error) {
-              throw new Error(error.message);
+              const capturedVersion = dirtySessionIds.get(session.id);
+              const safeToQuarantine =
+                dirtySessionIdsRef.current.get(session.id) === capturedVersion;
+              if (
+                clearPermanentDependentWrite({
+                  capturedVersion,
+                  dirtyWrites: dirtySessionIdsRef.current,
+                  error,
+                  recordId: session.id,
+                })
+              ) {
+                if (safeToQuarantine) {
+                  quarantinedSessionIdsRef.current.add(session.id);
+                  setSessions((current) =>
+                    current.map((record) =>
+                      record.id === session.id &&
+                      record.taskId === session.taskId
+                        ? { ...record, taskId: null }
+                        : record,
+                    ),
+                  );
+                }
+                setProjectNotice(
+                  "A focus record could not be synced after a remote workspace change. Reloading the latest workspace.",
+                );
+                workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+                continue;
+              }
+              throw new Error(error.message, { cause: error });
             }
           } else {
             const { data, error } = await supabase!
@@ -2790,7 +2910,35 @@ export default function Home() {
               .select("id")
               .single();
             if (error) {
-              throw new Error(error.message);
+              const capturedVersion = dirtySessionIds.get(session.id);
+              const safeToQuarantine =
+                dirtySessionIdsRef.current.get(session.id) === capturedVersion;
+              if (
+                clearPermanentDependentWrite({
+                  capturedVersion,
+                  dirtyWrites: dirtySessionIdsRef.current,
+                  error,
+                  recordId: session.id,
+                })
+              ) {
+                if (safeToQuarantine) {
+                  quarantinedSessionIdsRef.current.add(session.id);
+                  setSessions((current) =>
+                    current.map((record) =>
+                      record.id === session.id &&
+                      record.taskId === session.taskId
+                        ? { ...record, taskId: null }
+                        : record,
+                    ),
+                  );
+                }
+                setProjectNotice(
+                  "A focus record could not be synced after a remote workspace change. Reloading the latest workspace.",
+                );
+                workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+                continue;
+              }
+              throw new Error(error.message, { cause: error });
             }
             if (data?.id) {
               sessionIdMap.set(session.id, data.id);
@@ -2799,6 +2947,9 @@ export default function Home() {
         }
 
         for (const cancellation of cancellations) {
+          if (quarantinedCancellationIdsRef.current.has(cancellation.id)) {
+            continue;
+          }
           if (cancellation.userId && cancellation.userId !== syncAuthUser.id) {
             continue;
           }
@@ -2820,7 +2971,8 @@ export default function Home() {
             continue;
           }
 
-          const mappedTaskId = cancellation.taskId
+          const mappedTaskId =
+            cancellation.taskId && !missingTaskIds.has(cancellation.taskId)
             ? mapId(cancellation.taskId, taskIdMap)
             : null;
           const durationMinutes = normalizeInteger(
@@ -2854,7 +3006,36 @@ export default function Home() {
                 { onConflict: "id" },
               );
             if (error) {
-              throw new Error(error.message);
+              const capturedVersion = dirtyCancellationIds.get(cancellation.id);
+              const safeToQuarantine =
+                dirtyCancellationIdsRef.current.get(cancellation.id) ===
+                capturedVersion;
+              if (
+                clearPermanentDependentWrite({
+                  capturedVersion,
+                  dirtyWrites: dirtyCancellationIdsRef.current,
+                  error,
+                  recordId: cancellation.id,
+                })
+              ) {
+                if (safeToQuarantine) {
+                  quarantinedCancellationIdsRef.current.add(cancellation.id);
+                  setCancellations((current) =>
+                    current.map((record) =>
+                      record.id === cancellation.id &&
+                      record.taskId === cancellation.taskId
+                        ? { ...record, taskId: null }
+                        : record,
+                    ),
+                  );
+                }
+                setProjectNotice(
+                  "A cancellation record could not be synced after a remote workspace change. Reloading the latest workspace.",
+                );
+                workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+                continue;
+              }
+              throw new Error(error.message, { cause: error });
             }
           } else {
             const { data, error } = await supabase!
@@ -2863,7 +3044,36 @@ export default function Home() {
               .select("id")
               .single();
             if (error) {
-              throw new Error(error.message);
+              const capturedVersion = dirtyCancellationIds.get(cancellation.id);
+              const safeToQuarantine =
+                dirtyCancellationIdsRef.current.get(cancellation.id) ===
+                capturedVersion;
+              if (
+                clearPermanentDependentWrite({
+                  capturedVersion,
+                  dirtyWrites: dirtyCancellationIdsRef.current,
+                  error,
+                  recordId: cancellation.id,
+                })
+              ) {
+                if (safeToQuarantine) {
+                  quarantinedCancellationIdsRef.current.add(cancellation.id);
+                  setCancellations((current) =>
+                    current.map((record) =>
+                      record.id === cancellation.id &&
+                      record.taskId === cancellation.taskId
+                        ? { ...record, taskId: null }
+                        : record,
+                    ),
+                  );
+                }
+                setProjectNotice(
+                  "A cancellation record could not be synced after a remote workspace change. Reloading the latest workspace.",
+                );
+                workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+                continue;
+              }
+              throw new Error(error.message, { cause: error });
             }
             if (data?.id) {
               cancellationIdMap.set(cancellation.id, data.id);
@@ -3109,23 +3319,48 @@ export default function Home() {
         return;
       }
 
-      const { error, plan, snapshot } = await loadRemoteWorkspaceSnapshot(
-        authUser,
-        preferredProjectId,
-      );
-      setProfilePlan(plan);
-
-      if (error) {
-        setProjectNotice(error);
-        return;
-      }
-
-      if (snapshot) {
-        applyWorkspaceSnapshot(snapshot, {
-          preserveSelection: true,
-          preserveTimer: isRunningRef.current,
-        });
-      }
+      await runGuardedWorkspaceRefresh({
+        apply: async ({ error, plan, snapshot }: Awaited<
+          ReturnType<typeof loadRemoteWorkspaceSnapshot>
+        >) => {
+          setProfilePlan(plan);
+          if (error) {
+            setProjectNotice(error);
+            return;
+          }
+          if (snapshot) {
+            applyWorkspaceSnapshot(snapshot, {
+              preserveSelection: true,
+              preserveTimer: isRunningRef.current,
+            });
+          }
+        },
+        captureContext: () => ({
+          authUserId: authUser.id,
+          workspaceWriteVersion: workspaceWriteVersionRef.current,
+        }),
+        isContextCurrent: (started: {
+          authUserId: string;
+          workspaceWriteVersion: number;
+        }) =>
+          authenticatedUserIdRef.current === started.authUserId &&
+          workspaceWriteVersionRef.current === started.workspaceWriteVersion &&
+          !hasPendingWorkspaceWrites({
+            dirtyCancellationIds: dirtyCancellationIdsRef.current,
+            dirtyCategoryIds: dirtyCategoryIdsRef.current,
+            dirtyProjectIds: dirtyProjectIdsRef.current,
+            dirtySessionIds: dirtySessionIdsRef.current,
+            dirtySettings: dirtySettingsRef.current,
+            dirtyTaskIds: dirtyTaskIdsRef.current,
+            fullRemoteSyncNeeded: fullRemoteSyncNeededRef.current,
+            remoteSyncInFlight: remoteSyncInFlightRef.current,
+            remoteSyncQueued: remoteSyncQueuedRef.current,
+          }),
+        load: () => loadRemoteWorkspaceSnapshot(authUser, preferredProjectId),
+        onStale: () => {
+          workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+        },
+      });
     },
     [applyWorkspaceSnapshot, authUser],
   );

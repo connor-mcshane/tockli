@@ -4,15 +4,22 @@ import test from "node:test";
 import {
   WORKSPACE_REALTIME_TABLES,
   acknowledgeTaskWrite,
+  clearPermanentDependentWrite,
   clearAcknowledgedDirtyWrite,
   createWorkspaceInvalidationScheduler,
   deleteTaskWithRevision,
+  detachMissingTaskReferences,
   executeIdempotentTaskInsert,
   hasPendingWorkspaceWrites,
+  insertLegacyUnsyncedTask,
+  isPermanentWorkspaceWriteError,
   mergeRemoteTasksPreservingTimer,
   nextWorkspaceSyncRetryDelay,
+  normalizeStoredTaskRevision,
+  runGuardedWorkspaceRefresh,
   scheduleWorkspaceSyncRetry,
   taskIdForTimerRecord,
+  writeTaskWithRevision,
 } from "../lib/workspace-sync.mjs";
 
 function createFakeClock() {
@@ -151,6 +158,88 @@ test("an event arriving during refresh is queued for one follow-up refresh", asy
   assert.equal(clock.pendingCount(), 1);
   await clock.runNext();
   assert.equal(refreshCount, 2);
+});
+
+test("an authoritative refresh is requeued when a local edit begins during its fetch", async () => {
+  let authUserId = "user-a";
+  let workspaceWriteVersion = 4;
+  let resolveFetch;
+  let markFetchStarted;
+  let appliedSnapshot = null;
+  let requeueCount = 0;
+  const fetchStarted = new Promise((resolve) => {
+    markFetchStarted = resolve;
+  });
+  const fetched = new Promise((resolve) => {
+    resolveFetch = resolve;
+  });
+
+  const refresh = runGuardedWorkspaceRefresh({
+    apply: async ({ snapshot }) => {
+      appliedSnapshot = snapshot;
+    },
+    captureContext: () => ({ authUserId, workspaceWriteVersion }),
+    isContextCurrent: (started) =>
+      started.authUserId === authUserId &&
+      started.workspaceWriteVersion === workspaceWriteVersion,
+    load: async () => {
+      markFetchStarted();
+      return fetched;
+    },
+    onStale: () => {
+      requeueCount += 1;
+    },
+  });
+
+  await fetchStarted;
+  workspaceWriteVersion += 1;
+  resolveFetch({ snapshot: { tasks: [{ id: "remote-old" }] } });
+
+  assert.deepEqual(await refresh, {
+    applied: false,
+    result: { snapshot: { tasks: [{ id: "remote-old" }] } },
+  });
+  assert.equal(appliedSnapshot, null, "a stale snapshot must not clear newer dirty state");
+  assert.equal(requeueCount, 1);
+
+  authUserId = "user-b";
+  const currentResult = await runGuardedWorkspaceRefresh({
+    apply: async ({ snapshot }) => {
+      appliedSnapshot = snapshot;
+    },
+    captureContext: () => ({ authUserId, workspaceWriteVersion }),
+    isContextCurrent: (started) =>
+      started.authUserId === authUserId &&
+      started.workspaceWriteVersion === workspaceWriteVersion,
+    load: async () => ({ snapshot: { tasks: [{ id: "remote-current" }] } }),
+    onStale: () => {
+      requeueCount += 1;
+    },
+  });
+  assert.equal(currentResult.applied, true);
+  assert.deepEqual(appliedSnapshot, { tasks: [{ id: "remote-current" }] });
+
+  let resolveIdentityFetch;
+  const identityFetch = new Promise((resolve) => {
+    resolveIdentityFetch = resolve;
+  });
+  const identityRefresh = runGuardedWorkspaceRefresh({
+    apply: async () => {
+      assert.fail("a snapshot fetched for the prior identity must not apply");
+    },
+    captureContext: () => ({ authUserId, workspaceWriteVersion }),
+    isContextCurrent: (started) =>
+      started.authUserId === authUserId &&
+      started.workspaceWriteVersion === workspaceWriteVersion,
+    load: async () => identityFetch,
+    onStale: () => {
+      requeueCount += 1;
+    },
+  });
+  authUserId = "user-c";
+  resolveIdentityFetch({ snapshot: { tasks: [{ id: "wrong-user" }] } });
+  assert.equal((await identityRefresh).applied, false);
+  assert.equal(requeueCount, 2);
 });
 
 test("disposing the scheduler cancels timers and ignores later events", async () => {
@@ -302,6 +391,136 @@ test("an ambiguous task insert is recovered by its stable id", async () => {
   assert.equal(insertCount, 1);
   assert.equal(lookupCount, 1);
   assert.deepEqual(result, committedRow);
+});
+
+test("a legacy UUID task without a revision stays unsynced and inserts during migration", async () => {
+  const legacyTaskId = "0d911357-5e4d-45ef-a079-1cd407dfd531";
+  assert.equal(normalizeStoredTaskRevision(undefined), 0);
+  assert.equal(normalizeStoredTaskRevision(null), 0);
+  assert.equal(normalizeStoredTaskRevision(7), 7);
+
+  let insertCount = 0;
+  const result = await insertLegacyUnsyncedTask({
+    findExisting: async () => ({ data: null, error: null }),
+    insert: async () => {
+      insertCount += 1;
+      return { data: { id: legacyTaskId, revision: 1 }, error: null };
+    },
+    lookup: async () => ({ data: null, error: null }),
+  });
+
+  assert.equal(insertCount, 1);
+  assert.deepEqual(result, {
+    status: "inserted",
+    task: { id: legacyTaskId, revision: 1 },
+  });
+
+  let unsafeInsertCount = 0;
+  const existing = await insertLegacyUnsyncedTask({
+    findExisting: async () => ({
+      data: { id: legacyTaskId, revision: 9 },
+      error: null,
+    }),
+    insert: async () => {
+      unsafeInsertCount += 1;
+      return { data: null, error: null };
+    },
+    lookup: async () => ({ data: null, error: null }),
+  });
+  assert.equal(unsafeInsertCount, 0, "an unknown remote row must not be overwritten");
+  assert.equal(existing.status, "conflict");
+  assert.equal(existing.task.revision, 9);
+});
+
+test("timer completion detaches from a remotely deleted task and releases dirty writes", async () => {
+  const taskId = "0d911357-5e4d-45ef-a079-1cd407dfd531";
+  const sessionId = "10e7af34-705d-4ada-9d1d-6f3e48f8c16e";
+  const cancellationId = "8835ef99-ec68-48a4-8806-8c6d8b441942";
+  const taskWrite = await writeTaskWithRevision({
+    readCurrent: async () => ({ data: null, error: null }),
+    update: async () => ({ data: null, error: null }),
+  });
+  assert.deepEqual(taskWrite, { status: "missing", task: null });
+
+  const detached = detachMissingTaskReferences(
+    [{ id: sessionId, taskId, minutes: 25 }],
+    new Set([taskId]),
+  );
+  assert.deepEqual(detached, {
+    detachedRecordIds: [sessionId],
+    records: [{ id: sessionId, taskId: null, minutes: 25 }],
+  });
+  const detachedCancellations = detachMissingTaskReferences(
+    [{ id: cancellationId, taskId, reason: "interrupted" }],
+    new Set([taskId]),
+  );
+  assert.deepEqual(detachedCancellations, {
+    detachedRecordIds: [cancellationId],
+    records: [{ id: cancellationId, taskId: null, reason: "interrupted" }],
+  });
+
+  const dirtyTaskIds = new Map([[taskId, 11]]);
+  const dirtySessionIds = new Map([[sessionId, 12]]);
+  const dirtyCancellationIds = new Map([[cancellationId, 13]]);
+  assert.equal(clearAcknowledgedDirtyWrite(dirtyTaskIds, taskId, 11), true);
+  assert.equal(clearAcknowledgedDirtyWrite(dirtySessionIds, sessionId, 12), true);
+  assert.equal(
+    clearAcknowledgedDirtyWrite(dirtyCancellationIds, cancellationId, 13),
+    true,
+  );
+  assert.equal(
+    hasPendingWorkspaceWrites({
+      dirtyCancellationIds,
+      dirtyCategoryIds: new Map(),
+      dirtyProjectIds: new Map(),
+      dirtySessionIds,
+      dirtySettings: new Map(),
+      dirtyTaskIds,
+      fullRemoteSyncNeeded: false,
+      remoteSyncInFlight: false,
+      remoteSyncQueued: false,
+    }),
+    false,
+    "the queued authoritative reload must no longer be deadlocked",
+  );
+});
+
+test("permanent FK and RLS dependent failures are quarantined without clearing newer edits", () => {
+  assert.equal(isPermanentWorkspaceWriteError({ code: "23503" }), true);
+  assert.equal(isPermanentWorkspaceWriteError({ code: "42501" }), true);
+  assert.equal(isPermanentWorkspaceWriteError({ status: 403 }), true);
+  assert.equal(isPermanentWorkspaceWriteError({ code: "57014" }), false);
+
+  const dirtyWrites = new Map([["session-1", 8]]);
+  assert.equal(
+    clearPermanentDependentWrite({
+      capturedVersion: 7,
+      dirtyWrites,
+      error: { code: "23503" },
+      recordId: "session-1",
+    }),
+    true,
+  );
+  assert.equal(dirtyWrites.get("session-1"), 8);
+  assert.equal(
+    clearPermanentDependentWrite({
+      capturedVersion: 8,
+      dirtyWrites,
+      error: { code: "42501" },
+      recordId: "session-1",
+    }),
+    true,
+  );
+  assert.equal(dirtyWrites.has("session-1"), false);
+  assert.equal(
+    clearPermanentDependentWrite({
+      capturedVersion: 1,
+      dirtyWrites: new Map([["session-2", 1]]),
+      error: { code: "57014" },
+      recordId: "session-2",
+    }),
+    false,
+  );
 });
 
 test("workspace write retry delays are exponential and bounded", () => {

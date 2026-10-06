@@ -12,6 +12,7 @@ import postgres from "postgres";
 import {
   assertLocalIntegrationEndpoints,
   createBoundedFetch,
+  runCleanupSteps,
   withTimeout,
 } from "./local-integration-safety.mjs";
 
@@ -202,13 +203,26 @@ test("real MCP SDK client exercises the local stdio server protocol", {
   const protocolErrors = [];
 
   t.after(async () => {
-    await client?.close();
-    await withTimeout(
-      sql`delete from auth.users where id = ${USER_ID}::uuid`,
-      REQUEST_TIMEOUT_MS,
-      "MCP fixture cleanup",
+    await runCleanupSteps(
+      [
+        {
+          label: "MCP client close",
+          run: () => client?.close(),
+        },
+        {
+          label: "MCP database fixture cleanup",
+          run: () => sql`delete from auth.users where id = ${USER_ID}::uuid`,
+        },
+        {
+          label: "MCP temporary directory cleanup",
+          run: () => rm(configDir, { force: true, recursive: true }),
+        },
+      ],
+      {
+        message: "MCP integration cleanup failed.",
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      },
     );
-    await rm(configDir, { force: true, recursive: true });
   });
 
   await prepareFixture();

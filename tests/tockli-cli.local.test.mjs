@@ -9,6 +9,7 @@ import postgres from "postgres";
 import {
   assertLocalIntegrationEndpoints,
   createBoundedFetch,
+  runCleanupSteps,
   withTimeout,
 } from "./local-integration-safety.mjs";
 
@@ -158,12 +159,22 @@ test("real CLI child processes satisfy the local JSON contract", {
   const configDir = await mkdtemp(path.join(tmpdir(), "tockli-cli-local-"));
 
   t.after(async () => {
-    await withTimeout(
-      sql`delete from auth.users where id = ${USER_ID}::uuid`,
-      REQUEST_TIMEOUT_MS,
-      "CLI fixture cleanup",
+    await runCleanupSteps(
+      [
+        {
+          label: "CLI database fixture cleanup",
+          run: () => sql`delete from auth.users where id = ${USER_ID}::uuid`,
+        },
+        {
+          label: "CLI temporary directory cleanup",
+          run: () => rm(configDir, { force: true, recursive: true }),
+        },
+      ],
+      {
+        message: "CLI integration cleanup failed.",
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      },
     );
-    await rm(configDir, { force: true, recursive: true });
   });
   await prepareFixture();
 

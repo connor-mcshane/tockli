@@ -10,6 +10,7 @@ import { createTockliApi } from "../lib/tockli-api.mjs";
 import {
   assertLocalIntegrationEndpoints,
   createBoundedFetch,
+  runCleanupSteps,
   withTimeout,
 } from "./local-integration-safety.mjs";
 
@@ -165,17 +166,27 @@ test("shared API works through local Auth/PostgREST as owner, editor, and viewer
   timeout: INTEGRATION_TEST_TIMEOUT_MS,
 }, async (t) => {
   await requireLocalStack();
-  await prepareUsers();
   const configRoot = await mkdtemp(path.join(tmpdir(), "tockli-api-local-"));
 
   t.after(async () => {
-    await withTimeout(
-      sql`delete from auth.users where id in ${sql(TEST_USER_IDS)}`,
-      DATABASE_OPERATION_TIMEOUT_MS,
-      "Local database fixture cleanup",
+    await runCleanupSteps(
+      [
+        {
+          label: "API database fixture cleanup",
+          run: () => sql`delete from auth.users where id in ${sql(TEST_USER_IDS)}`,
+        },
+        {
+          label: "API temporary directory cleanup",
+          run: () => rm(configRoot, { force: true, recursive: true }),
+        },
+      ],
+      {
+        message: "API integration cleanup failed.",
+        timeoutMs: DATABASE_OPERATION_TIMEOUT_MS,
+      },
     );
-    await rm(configRoot, { force: true, recursive: true });
   });
+  await prepareUsers();
 
   const owner = await makeApi(path.join(configRoot, "owner"));
   assert.equal(

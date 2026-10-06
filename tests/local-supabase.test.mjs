@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import postgres from "postgres";
 
+import {
+  assertLocalDatabaseEndpoint,
+  runCleanupSteps,
+  withTimeout,
+} from "./local-integration-safety.mjs";
+
 const DATABASE_URL =
   process.env.SUPABASE_DB_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
@@ -12,15 +18,30 @@ const outsiderId = "00000000-0000-4000-8000-00000000a003";
 const editorId = "00000000-0000-4000-8000-00000000a004";
 const marketingEmail = "early-access@tockli.test";
 const testUserIds = [ownerId, collaboratorId, outsiderId, editorId];
+const CONNECTION_TIMEOUT_SECONDS = 3;
+const STATEMENT_TIMEOUT_MS = 5_000;
+const DATABASE_OPERATION_TIMEOUT_MS = 15_000;
+const DATABASE_TEST_TIMEOUT_MS = 60_000;
+
+assertLocalDatabaseEndpoint(DATABASE_URL);
 
 const sql = postgres(DATABASE_URL, {
+  connect_timeout: CONNECTION_TIMEOUT_SECONDS,
+  connection: {
+    lock_timeout: STATEMENT_TIMEOUT_MS,
+    statement_timeout: STATEMENT_TIMEOUT_MS,
+  },
   idle_timeout: 1,
   max: 1,
 });
 
 async function requireLocalDatabase() {
   try {
-    await sql`select 1`;
+    await withTimeout(
+      sql`select 1`,
+      DATABASE_OPERATION_TIMEOUT_MS,
+      "Local database health check",
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -34,22 +55,26 @@ async function requireLocalDatabase() {
 }
 
 async function resetTestData() {
-  await sql.begin(async (tx) => {
-    await tx`delete from public.marketing_signups where lower(email) = lower(${marketingEmail})`;
-    await tx`delete from public.pomodoro_cancellations where user_id in ${tx(testUserIds)}`;
-    await tx`delete from public.focus_sessions where user_id in ${tx(testUserIds)}`;
-    await tx`delete from public.task_comments where author_id in ${tx(testUserIds)}`;
-    await tx`delete from public.task_subtasks where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
-    await tx`delete from public.task_tags where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
-    await tx`delete from public.tasks where created_by in ${tx(testUserIds)}`;
-    await tx`delete from public.task_categories where created_by in ${tx(testUserIds)}`;
-    await tx`delete from public.project_invitations where invited_by in ${tx(testUserIds)} or accepted_by in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
-    await tx`delete from public.project_members where user_id in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
-    await tx`delete from public.projects where owner_id in ${tx(testUserIds)}`;
-    await tx`delete from public.user_settings where user_id in ${tx(testUserIds)}`;
-    await tx`delete from public.profiles where id in ${tx(testUserIds)}`;
-    await tx`delete from auth.users where id in ${tx(testUserIds)}`;
-  });
+  await withTimeout(
+    sql.begin(async (tx) => {
+      await tx`delete from public.marketing_signups where lower(email) = lower(${marketingEmail})`;
+      await tx`delete from public.pomodoro_cancellations where user_id in ${tx(testUserIds)}`;
+      await tx`delete from public.focus_sessions where user_id in ${tx(testUserIds)}`;
+      await tx`delete from public.task_comments where author_id in ${tx(testUserIds)}`;
+      await tx`delete from public.task_subtasks where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
+      await tx`delete from public.task_tags where task_id in (select id from public.tasks where created_by in ${tx(testUserIds)})`;
+      await tx`delete from public.tasks where created_by in ${tx(testUserIds)}`;
+      await tx`delete from public.task_categories where created_by in ${tx(testUserIds)}`;
+      await tx`delete from public.project_invitations where invited_by in ${tx(testUserIds)} or accepted_by in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
+      await tx`delete from public.project_members where user_id in ${tx(testUserIds)} or project_id in (select id from public.projects where owner_id in ${tx(testUserIds)})`;
+      await tx`delete from public.projects where owner_id in ${tx(testUserIds)}`;
+      await tx`delete from public.user_settings where user_id in ${tx(testUserIds)}`;
+      await tx`delete from public.profiles where id in ${tx(testUserIds)}`;
+      await tx`delete from auth.users where id in ${tx(testUserIds)}`;
+    }),
+    DATABASE_OPERATION_TIMEOUT_MS,
+    "Local database fixture reset",
+  );
 }
 
 async function insertAuthUser(tx, id, email, name, plan = "free") {
@@ -106,7 +131,9 @@ async function withAnon(callback) {
   });
 }
 
-test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS behavior", async () => {
+test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS behavior", {
+  timeout: DATABASE_TEST_TIMEOUT_MS,
+}, async () => {
   await requireLocalDatabase();
   await resetTestData();
 
@@ -772,6 +799,18 @@ test("local Supabase schema supports Tockli tasks, comments, sessions, and RLS b
 });
 
 test.after(async () => {
-  await resetTestData().catch(() => {});
-  await sql.end();
+  await runCleanupSteps(
+    [
+      { label: "Database fixture cleanup", run: resetTestData },
+      {
+        label: "Database client shutdown",
+        run: () => sql.end({ timeout: 5 }),
+        timeoutMs: 6_000,
+      },
+    ],
+    {
+      message: "Local database test cleanup failed.",
+      timeoutMs: DATABASE_OPERATION_TIMEOUT_MS,
+    },
+  );
 });

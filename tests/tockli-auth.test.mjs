@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -204,6 +204,99 @@ test("restoreSession persists tokens refreshed by Supabase", async (t) => {
   const stored = JSON.parse(await readFile(path.join(configDir, "session.json"), "utf8"));
   assert.equal(stored.access_token, "new-access");
   assert.equal(stored.refresh_token, "new-refresh");
+});
+
+test("a long-running client atomically persists rotated tokens for the next process", async (t) => {
+  const configDir = await mkdtemp(path.join(tmpdir(), "tockli-auth-rotation-"));
+  t.after(async () => {
+    await import("node:fs/promises").then(({ rm }) =>
+      rm(configDir, { force: true, recursive: true }),
+    );
+  });
+
+  let authStateListener;
+  let clientOptions;
+  const longRunningAuth = createTockliAuth({
+    clientFactory(_url, _key, options) {
+      clientOptions = options;
+      return {
+        auth: {
+          onAuthStateChange(listener) {
+            authStateListener = listener;
+            return {
+              data: { subscription: { unsubscribe() {} } },
+            };
+          },
+          async signInWithPassword() {
+            return {
+              data: {
+                session: {
+                  ...session("initial-access", "initial-refresh"),
+                  expires_at: 1,
+                  expires_in: 0,
+                },
+                user: USER,
+              },
+              error: null,
+            };
+          },
+        },
+      };
+    },
+    configDir,
+    env: {
+      TOCKLI_SUPABASE_KEY: "publishable-key",
+      TOCKLI_SUPABASE_URL: "https://example.supabase.co",
+    },
+  });
+
+  assert.equal(clientOptions.auth.autoRefreshToken, true);
+  await longRunningAuth.loginWithPassword({
+    email: USER.email,
+    password: "password",
+  });
+  authStateListener(
+    "TOKEN_REFRESHED",
+    session("rotated-access-1", "rotated-refresh-1"),
+  );
+  authStateListener(
+    "TOKEN_REFRESHED",
+    session("rotated-access-2", "rotated-refresh-2"),
+  );
+  await longRunningAuth.flushSessionPersistence();
+
+  const sessionPath = path.join(configDir, "session.json");
+  const stored = JSON.parse(await readFile(sessionPath, "utf8"));
+  assert.equal(stored.access_token, "rotated-access-2");
+  assert.equal(stored.refresh_token, "rotated-refresh-2");
+  assert.deepEqual(await readdir(configDir), ["session.json"]);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(sessionPath)).mode & 0o777, 0o600);
+  }
+
+  let restoredTokens;
+  const nextProcess = createTockliAuth({
+    client: {
+      auth: {
+        async setSession(tokens) {
+          restoredTokens = tokens;
+          return {
+            data: {
+              session: session("rotated-access-2", "rotated-refresh-2"),
+              user: USER,
+            },
+            error: null,
+          };
+        },
+      },
+    },
+    configDir,
+  });
+  await nextProcess.restoreSession();
+  assert.deepEqual(restoredTokens, {
+    access_token: "rotated-access-2",
+    refresh_token: "rotated-refresh-2",
+  });
 });
 
 test("getCurrentUser requires an authenticated user", async () => {
