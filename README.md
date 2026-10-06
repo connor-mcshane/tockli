@@ -42,6 +42,11 @@ The first command is the right choice for local product testing. After
 `pnpm run db:start` and `pnpm run db:reset`, sign in with
 `demo@tockli.test` and password `tockli-demo`.
 
+The repository also includes a revision-safe `tockli` CLI and local stdio MCP
+server. See [Local CLI, MCP, and cross-client workflow](docs/local-cli-mcp.md)
+for password-stdin login, examples, MCP client configuration, the complete
+local integration command, and security boundaries.
+
 ## Launch Routes
 
 - `/` - acquisition landing page
@@ -61,6 +66,7 @@ pnpm run build:netlify
 pnpm test
 pnpm run test:prod
 pnpm run test:db
+pnpm run test:tockli:local
 pnpm run lint
 ```
 

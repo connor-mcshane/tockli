@@ -61,6 +61,10 @@ import {
   taskIdsAffectedByColumnDeletion,
   taskMatchesSearch,
 } from "@/lib/workspace-ui.mjs";
+import {
+  WORKSPACE_REALTIME_TABLES,
+  createWorkspaceInvalidationScheduler,
+} from "@/lib/workspace-sync.mjs";
 
 type View = "board" | "timer" | "analytics" | "settings";
 type PlanTier = "free" | "pro";
@@ -179,6 +183,7 @@ type Task = {
   estimate: number;
   spent: number;
   priority: Priority;
+  revision: number;
   tags: string[];
   categoryId: string | null;
   subtasks: SubTask[];
@@ -350,6 +355,7 @@ const initialTasks: Task[] = [
     estimate: 50,
     spent: 10,
     priority: "high",
+    revision: 0,
     tags: ["writing", "strategy"],
     categoryId: "category-writing",
     subtasks: [
@@ -376,6 +382,7 @@ const initialTasks: Task[] = [
     estimate: 75,
     spent: 35,
     priority: "medium",
+    revision: 0,
     tags: ["design"],
     categoryId: "category-design",
     subtasks: [
@@ -394,6 +401,7 @@ const initialTasks: Task[] = [
     estimate: 50,
     spent: 0,
     priority: "medium",
+    revision: 0,
     tags: ["backend"],
     categoryId: "category-backend",
     subtasks: [
@@ -413,6 +421,7 @@ const initialTasks: Task[] = [
     estimate: 25,
     spent: 25,
     priority: "low",
+    revision: 0,
     tags: ["review"],
     categoryId: "category-review",
     subtasks: [
@@ -431,6 +440,7 @@ const initialTasks: Task[] = [
     estimate: 50,
     spent: 20,
     priority: "high",
+    revision: 0,
     tags: ["shared", "launch"],
     categoryId: "category-launch",
     subtasks: [
@@ -464,6 +474,7 @@ const initialTasks: Task[] = [
     estimate: 25,
     spent: 0,
     priority: "medium",
+    revision: 0,
     tags: ["copy"],
     categoryId: "category-copy",
     subtasks: [
@@ -1105,6 +1116,7 @@ function mapRemoteTask(row: RemoteTaskRow): Task {
     id: row.id,
     priority: row.priority ?? "medium",
     projectId: row.project_id,
+    revision: normalizeInteger(Number(row.revision), 1, Number.MAX_SAFE_INTEGER, 1),
     spent: row.spent_minutes,
     status: row.status || "todo",
     subtasks,
@@ -1302,7 +1314,7 @@ async function loadRemoteWorkspaceSnapshot(
     supabase
       .from("tasks")
       .select(
-        "id,project_id,category_id,title,note,status,priority,estimate_minutes,spent_minutes,due_label,sort_order,created_at,completed_at,task_tags(label),task_subtasks(id,title,is_done,sort_order),task_comments(id,author_id,body,created_at,profiles(id,email,display_name))",
+        "id,project_id,category_id,title,note,status,priority,estimate_minutes,spent_minutes,due_label,sort_order,created_at,completed_at,revision,task_tags(label),task_subtasks(id,title,is_done,sort_order),task_comments(id,author_id,body,created_at,profiles(id,email,display_name))",
       )
       .in("project_id", projectIds)
       .order("sort_order", { ascending: true })
@@ -1478,34 +1490,43 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
     return initialTasks;
   }
 
-  return tasks.map((task) => ({
-    completedAt: task.completedAt ?? null,
-    id: task.id ?? createUuid(),
-    projectId: task.projectId ?? initialProjects[0].id,
-    title: task.title?.trim() || "Untitled task",
-    description: task.description ?? task.note ?? "",
-    status: task.status ?? "todo",
-    estimate: task.estimate ?? initialSettings.focusMinutes,
-    spent: task.spent ?? 0,
-    priority: task.priority ?? "medium",
-    tags: task.tags?.map(normalizeTag).filter(Boolean) ?? [],
-    categoryId: task.categoryId ?? null,
-    subtasks:
-      task.subtasks?.map((subtask) => ({
-        id: subtask.id ?? createUuid(),
-        title: subtask.title?.trim() || "Untitled subtask",
-        done: Boolean(subtask.done),
-      })) ?? [],
-    comments:
-      task.comments?.map((comment) => ({
-        id: comment.id ?? createUuid(),
-        authorId: comment.authorId ?? "unknown-user",
-        authorName: comment.authorName?.trim() || "Tockli user",
-        body: comment.body ?? "",
-        createdAt: comment.createdAt ?? new Date().toISOString(),
-      })) ?? [],
-    due: task.due ?? "",
-  }));
+  return tasks.map((task) => {
+    const id = task.id ?? createUuid();
+    return {
+      completedAt: task.completedAt ?? null,
+      id,
+      projectId: task.projectId ?? initialProjects[0].id,
+      title: task.title?.trim() || "Untitled task",
+      description: task.description ?? task.note ?? "",
+      status: task.status ?? "todo",
+      estimate: task.estimate ?? initialSettings.focusMinutes,
+      spent: task.spent ?? 0,
+      priority: task.priority ?? "medium",
+      revision: normalizeInteger(
+        task.revision,
+        0,
+        Number.MAX_SAFE_INTEGER,
+        isUuid(id) ? 1 : 0,
+      ),
+      tags: task.tags?.map(normalizeTag).filter(Boolean) ?? [],
+      categoryId: task.categoryId ?? null,
+      subtasks:
+        task.subtasks?.map((subtask) => ({
+          id: subtask.id ?? createUuid(),
+          title: subtask.title?.trim() || "Untitled subtask",
+          done: Boolean(subtask.done),
+        })) ?? [],
+      comments:
+        task.comments?.map((comment) => ({
+          id: comment.id ?? createUuid(),
+          authorId: comment.authorId ?? "unknown-user",
+          authorName: comment.authorName?.trim() || "Tockli user",
+          body: comment.body ?? "",
+          createdAt: comment.createdAt ?? new Date().toISOString(),
+        })) ?? [],
+      due: task.due ?? "",
+    };
+  });
 }
 
 type RemoteProfileRow = {
@@ -1579,6 +1600,7 @@ type RemoteTaskRow = {
   note?: string | null;
   status: string;
   priority: Priority;
+  revision: number | string;
   estimate_minutes: number;
   spent_minutes: number;
   due_label?: string | null;
@@ -1747,6 +1769,11 @@ export default function Home() {
   const committedDraftTaskIdsRef = useRef(new Set<string>());
   const remoteSyncInFlightRef = useRef(false);
   const remoteSyncQueuedRef = useRef(false);
+  const workspaceInvalidationSchedulerRef = useRef<
+    ReturnType<typeof createWorkspaceInvalidationScheduler> | null
+  >(null);
+  const focusTaskIdRef = useRef(focusTaskId);
+  const isRunningRef = useRef(isRunning);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelStep, setCancelStep] = useState<"confirm" | "reason">("confirm");
   const [cancelReason, setCancelReason] = useState<CancellationReason | "">("");
@@ -1768,6 +1795,11 @@ export default function Home() {
   const authInitial = authDisplayName.trim().charAt(0).toUpperCase() || "T";
   const appUserId = authUser?.id ?? currentUser.id;
   const appUserName = authDisplayName || currentUser.name;
+
+  useEffect(() => {
+    focusTaskIdRef.current = focusTaskId;
+    isRunningRef.current = isRunning;
+  }, [focusTaskId, isRunning]);
 
   useEffect(() => {
     if (!supabase) {
@@ -1850,7 +1882,18 @@ export default function Home() {
       fullRemoteSyncNeededRef.current = Boolean(options?.requireFullRemoteSync);
       setProjects(snapshot.projects);
       setCategories(snapshot.categories);
-      setTasks(snapshot.tasks);
+      setTasks((current) => {
+        if (!options?.preserveTimer) {
+          return snapshot.tasks;
+        }
+        const activeFocusTask = current.find(
+          (task) => task.id === focusTaskIdRef.current,
+        );
+        return activeFocusTask &&
+          !snapshot.tasks.some((task) => task.id === activeFocusTask.id)
+          ? [...snapshot.tasks, activeFocusTask]
+          : snapshot.tasks;
+      });
       setSessions(snapshot.sessions);
       setCancellations(snapshot.cancellations);
       setSettings(normalizedSettings);
@@ -2160,6 +2203,7 @@ export default function Home() {
     });
 
     if (snapshotJson === lastRemoteSyncJsonRef.current) {
+      workspaceInvalidationSchedulerRef.current?.notifyWorkspaceClean();
       return;
     }
 
@@ -2179,6 +2223,8 @@ export default function Home() {
         const projectIdMap = new Map<string, string>();
         const categoryIdMap = new Map<string, string>();
         const taskIdMap = new Map<string, string>();
+        const taskRevisionMap = new Map<string, number>();
+        const conflictedTaskIds = new Set<string>();
         const subtaskIdMap = new Map<string, string>();
         const commentIdMap = new Map<string, string>();
         const sessionIdMap = new Map<string, string>();
@@ -2360,7 +2406,6 @@ export default function Home() {
               ? mappedCategoryId
               : null,
             completed_at: task.completedAt ?? null,
-            created_by: syncAuthUser.id,
             due_label: task.due || null,
             estimate_minutes: normalizeInteger(task.estimate, 1, 480, settings.focusMinutes),
             note: task.description,
@@ -2372,34 +2417,66 @@ export default function Home() {
             title: task.title || "Untitled task",
           };
 
-          if (isUuid(task.id)) {
-            const { error } = await supabase!
+          if (isUuid(task.id) && task.revision > 0) {
+            const { data, error } = await supabase!
               .from("tasks")
-              .upsert(
-                {
-                  id: task.id,
-                  ...taskPayload,
-                },
-                { onConflict: "id" },
-              );
+              .update(taskPayload)
+              .eq("id", task.id)
+              .eq("revision", task.revision)
+              .select("id,revision")
+              .maybeSingle();
             if (error) {
               throw new Error(error.message);
             }
+            if (!data) {
+              dirtyTaskIdsRef.current.delete(task.id);
+              conflictedTaskIds.add(task.id);
+              continue;
+            }
+            taskRevisionMap.set(
+              task.id,
+              normalizeInteger(
+                Number(data.revision),
+                1,
+                Number.MAX_SAFE_INTEGER,
+                task.revision,
+              ),
+            );
           } else {
             const { data, error } = await supabase!
               .from("tasks")
-              .insert(taskPayload)
-              .select("id")
+              .insert({
+                ...(isUuid(task.id) ? { id: task.id } : {}),
+                ...taskPayload,
+                created_by: syncAuthUser.id,
+              })
+              .select("id,revision")
               .single();
             if (error) {
               throw new Error(error.message);
             }
             if (data?.id) {
-              taskIdMap.set(task.id, data.id);
+              if (data.id !== task.id) {
+                taskIdMap.set(task.id, data.id);
+              }
+              taskRevisionMap.set(
+                task.id,
+                normalizeInteger(
+                  Number(data.revision),
+                  1,
+                  Number.MAX_SAFE_INTEGER,
+                  1,
+                ),
+              );
             }
           }
 
           syncedEditableTasks.push(task);
+        }
+
+        if (conflictedTaskIds.size) {
+          setProjectNotice("Task changed elsewhere. Reloaded the latest workspace.");
+          workspaceInvalidationSchedulerRef.current?.requestInvalidation();
         }
 
         const syncedTaskIds = syncedEditableTasks
@@ -2661,6 +2738,7 @@ export default function Home() {
           projectIdMap,
           categoryIdMap,
           taskIdMap,
+          taskRevisionMap,
           subtaskIdMap,
           commentIdMap,
           sessionIdMap,
@@ -2729,6 +2807,7 @@ export default function Home() {
               })),
               id: mapId(task.id, taskIdMap),
               projectId: mapId(task.projectId, projectIdMap),
+              revision: taskRevisionMap.get(task.id) ?? task.revision,
               subtasks: task.subtasks.map((subtask) => ({
                 ...subtask,
                 id: mapId(subtask.id, subtaskIdMap),
@@ -2774,6 +2853,8 @@ export default function Home() {
         if (remoteSyncQueuedRef.current) {
           remoteSyncQueuedRef.current = false;
           setRemoteSyncRequestId((current) => current + 1);
+        } else {
+          workspaceInvalidationSchedulerRef.current?.notifyWorkspaceClean();
         }
       }
     }
@@ -2830,12 +2911,85 @@ export default function Home() {
         return;
       }
 
-      if (snapshot?.projects.length) {
-        applyWorkspaceSnapshot(snapshot);
+      if (snapshot) {
+        applyWorkspaceSnapshot(snapshot, {
+          preserveSelection: true,
+          preserveTimer: isRunningRef.current,
+        });
       }
     },
     [applyWorkspaceSnapshot, authUser],
   );
+
+  useEffect(() => {
+    if (!supabase || !authUser || !hydrated) {
+      return;
+    }
+
+    const realtimeClient = supabase;
+    let alive = true;
+    const scheduler = createWorkspaceInvalidationScheduler({
+      isBlocked: () =>
+        remoteSyncInFlightRef.current ||
+        remoteSyncQueuedRef.current ||
+        fullRemoteSyncNeededRef.current ||
+        dirtyProjectIdsRef.current.size > 0 ||
+        dirtyCategoryIdsRef.current.size > 0 ||
+        dirtyTaskIdsRef.current.size > 0,
+      refresh: async () => {
+        try {
+          await refreshRemoteWorkspace();
+        } catch {
+          setProjectNotice("Tockli could not refresh remote changes.");
+        }
+      },
+    });
+    workspaceInvalidationSchedulerRef.current = scheduler;
+
+    function requestRefresh() {
+      scheduler.requestInvalidation();
+    }
+
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        requestRefresh();
+      }
+    }
+
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", requestRefresh);
+    window.addEventListener("online", requestRefresh);
+
+    let channel = realtimeClient.channel(
+      `workspace-invalidation:${authUser.id}:${tabIdRef.current}`,
+    );
+    for (const table of WORKSPACE_REALTIME_TABLES) {
+      channel = channel.on(
+        "postgres_changes",
+        { event: "*", schema: "public", table },
+        requestRefresh,
+      );
+    }
+    channel.subscribe((status) => {
+      if (alive && (status === "CHANNEL_ERROR" || status === "TIMED_OUT")) {
+        setProjectNotice(
+          "Live updates paused. Tockli will refresh when this tab returns.",
+        );
+      }
+    });
+
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", requestRefresh);
+      window.removeEventListener("online", requestRefresh);
+      scheduler.dispose();
+      if (workspaceInvalidationSchedulerRef.current === scheduler) {
+        workspaceInvalidationSchedulerRef.current = null;
+      }
+      void realtimeClient.removeChannel(channel);
+    };
+  }, [authUser, hydrated, refreshRemoteWorkspace]);
 
   useEffect(() => {
     if (!authReady || !hydrated) {
@@ -3218,6 +3372,7 @@ export default function Home() {
       estimate: settings.focusMinutes,
       spent: 0,
       priority: "medium",
+      revision: 0,
       tags: [],
       description: "",
       categoryId: activeProjectCategories[0]?.id ?? null,
