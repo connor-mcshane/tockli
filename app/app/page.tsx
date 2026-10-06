@@ -63,7 +63,15 @@ import {
 } from "@/lib/workspace-ui.mjs";
 import {
   WORKSPACE_REALTIME_TABLES,
+  acknowledgeTaskWrite,
+  clearAcknowledgedDirtyWrite,
   createWorkspaceInvalidationScheduler,
+  deleteTaskWithRevision,
+  executeIdempotentTaskInsert,
+  hasPendingWorkspaceWrites,
+  mergeRemoteTasksPreservingTimer,
+  scheduleWorkspaceSyncRetry,
+  taskIdForTimerRecord,
 } from "@/lib/workspace-sync.mjs";
 
 type View = "board" | "timer" | "analytics" | "settings";
@@ -190,6 +198,7 @@ type Task = {
   comments: TaskComment[];
   due: string;
   completedAt?: string | null;
+  remoteDetached?: boolean;
 };
 
 type FocusSession = {
@@ -1117,6 +1126,7 @@ function mapRemoteTask(row: RemoteTaskRow): Task {
     priority: row.priority ?? "medium",
     projectId: row.project_id,
     revision: normalizeInteger(Number(row.revision), 1, Number.MAX_SAFE_INTEGER, 1),
+    remoteDetached: false,
     spent: row.spent_minutes,
     status: row.status || "todo",
     subtasks,
@@ -1508,6 +1518,7 @@ function normalizeTasks(tasks?: Array<Partial<Task> & { note?: string }>): Task[
         Number.MAX_SAFE_INTEGER,
         isUuid(id) ? 1 : 0,
       ),
+      remoteDetached: Boolean(task.remoteDetached),
       tags: task.tags?.map(normalizeTag).filter(Boolean) ?? [],
       categoryId: task.categoryId ?? null,
       subtasks:
@@ -1763,12 +1774,19 @@ export default function Home() {
   const lastAppliedStorageUpdatedAtRef = useRef("");
   const lastLocalStorageWorkspaceJsonRef = useRef("");
   const fullRemoteSyncNeededRef = useRef(false);
-  const dirtyProjectIdsRef = useRef(new Set<string>());
-  const dirtyCategoryIdsRef = useRef(new Set<string>());
-  const dirtyTaskIdsRef = useRef(new Set<string>());
+  const workspaceWriteVersionRef = useRef(0);
+  const dirtyProjectIdsRef = useRef(new Map<string, number>());
+  const dirtyCategoryIdsRef = useRef(new Map<string, number>());
+  const dirtyTaskIdsRef = useRef(new Map<string, number>());
+  const dirtySettingsRef = useRef(new Map<string, number>());
+  const dirtySessionIdsRef = useRef(new Map<string, number>());
+  const dirtyCancellationIdsRef = useRef(new Map<string, number>());
   const committedDraftTaskIdsRef = useRef(new Set<string>());
+  const pendingTaskInsertIdsRef = useRef(new Map<string, string>());
   const remoteSyncInFlightRef = useRef(false);
   const remoteSyncQueuedRef = useRef(false);
+  const remoteSyncRetryAttemptRef = useRef(0);
+  const remoteSyncRetryTimeoutRef = useRef<number | null>(null);
   const workspaceInvalidationSchedulerRef = useRef<
     ReturnType<typeof createWorkspaceInvalidationScheduler> | null
   >(null);
@@ -1879,21 +1897,26 @@ export default function Home() {
       dirtyProjectIdsRef.current.clear();
       dirtyCategoryIdsRef.current.clear();
       dirtyTaskIdsRef.current.clear();
+      dirtySettingsRef.current.clear();
+      dirtySessionIdsRef.current.clear();
+      dirtyCancellationIdsRef.current.clear();
+      pendingTaskInsertIdsRef.current.clear();
+      remoteSyncRetryAttemptRef.current = 0;
+      if (remoteSyncRetryTimeoutRef.current !== null) {
+        window.clearTimeout(remoteSyncRetryTimeoutRef.current);
+        remoteSyncRetryTimeoutRef.current = null;
+      }
       fullRemoteSyncNeededRef.current = Boolean(options?.requireFullRemoteSync);
       setProjects(snapshot.projects);
       setCategories(snapshot.categories);
-      setTasks((current) => {
-        if (!options?.preserveTimer) {
-          return snapshot.tasks;
-        }
-        const activeFocusTask = current.find(
-          (task) => task.id === focusTaskIdRef.current,
-        );
-        return activeFocusTask &&
-          !snapshot.tasks.some((task) => task.id === activeFocusTask.id)
-          ? [...snapshot.tasks, activeFocusTask]
-          : snapshot.tasks;
-      });
+      setTasks((current) =>
+        mergeRemoteTasksPreservingTimer(
+          snapshot.tasks,
+          current,
+          focusTaskIdRef.current,
+          Boolean(options?.preserveTimer),
+        ),
+      );
       setSessions(snapshot.sessions);
       setCancellations(snapshot.cancellations);
       setSettings(normalizedSettings);
@@ -2202,7 +2225,19 @@ export default function Home() {
       tasks,
     });
 
-    if (snapshotJson === lastRemoteSyncJsonRef.current) {
+    const hasDirtyWorkspaceWrites = hasPendingWorkspaceWrites({
+      dirtyCancellationIds: dirtyCancellationIdsRef.current,
+      dirtyCategoryIds: dirtyCategoryIdsRef.current,
+      dirtyProjectIds: dirtyProjectIdsRef.current,
+      dirtySessionIds: dirtySessionIdsRef.current,
+      dirtySettings: dirtySettingsRef.current,
+      dirtyTaskIds: dirtyTaskIdsRef.current,
+      fullRemoteSyncNeeded: fullRemoteSyncNeededRef.current,
+      remoteSyncInFlight: false,
+      remoteSyncQueued: false,
+    });
+
+    if (snapshotJson === lastRemoteSyncJsonRef.current && !hasDirtyWorkspaceWrites) {
       workspaceInvalidationSchedulerRef.current?.notifyWorkspaceClean();
       return;
     }
@@ -2218,12 +2253,15 @@ export default function Home() {
       }
 
       remoteSyncInFlightRef.current = true;
+      if (remoteSyncRetryTimeoutRef.current !== null) {
+        window.clearTimeout(remoteSyncRetryTimeoutRef.current);
+        remoteSyncRetryTimeoutRef.current = null;
+      }
 
       try {
         const projectIdMap = new Map<string, string>();
         const categoryIdMap = new Map<string, string>();
         const taskIdMap = new Map<string, string>();
-        const taskRevisionMap = new Map<string, number>();
         const conflictedTaskIds = new Set<string>();
         const subtaskIdMap = new Map<string, string>();
         const commentIdMap = new Map<string, string>();
@@ -2239,9 +2277,12 @@ export default function Home() {
             .filter((project) => project.currentUserRole !== "viewer")
             .map((project) => project.id),
         );
-        const dirtyProjectIds = new Set(dirtyProjectIdsRef.current);
-        const dirtyCategoryIds = new Set(dirtyCategoryIdsRef.current);
-        const dirtyTaskIds = new Set(dirtyTaskIdsRef.current);
+        const dirtyProjectIds = new Map(dirtyProjectIdsRef.current);
+        const dirtyCategoryIds = new Map(dirtyCategoryIdsRef.current);
+        const dirtyTaskIds = new Map(dirtyTaskIdsRef.current);
+        const dirtySettings = new Map(dirtySettingsRef.current);
+        const dirtySessionIds = new Map(dirtySessionIdsRef.current);
+        const dirtyCancellationIds = new Map(dirtyCancellationIdsRef.current);
         const shouldSyncAllWorkspace = fullRemoteSyncNeededRef.current;
 
         const profileResult = await supabase!.from("profiles").upsert(
@@ -2256,13 +2297,15 @@ export default function Home() {
           throw new Error(profileResult.error.message);
         }
 
-        const settingsResult = await supabase!
-          .from("user_settings")
-          .upsert(mapSettingsForRemote(syncAuthUser.id, settings), {
-            onConflict: "user_id",
-          });
-        if (settingsResult.error) {
-          throw new Error(settingsResult.error.message);
+        if (shouldSyncAllWorkspace || dirtySettings.size > 0) {
+          const settingsResult = await supabase!
+            .from("user_settings")
+            .upsert(mapSettingsForRemote(syncAuthUser.id, settings), {
+              onConflict: "user_id",
+            });
+          if (settingsResult.error) {
+            throw new Error(settingsResult.error.message);
+          }
         }
 
         for (const project of projects) {
@@ -2377,6 +2420,71 @@ export default function Home() {
 
         const syncedEditableTasks: Task[] = [];
 
+        function acknowledgeRemoteTask(
+          localTaskId: string,
+          remoteTaskId: string,
+          revision: number,
+        ) {
+          if (remoteTaskId !== localTaskId) {
+            taskIdMap.set(localTaskId, remoteTaskId);
+            const capturedVersion = dirtyTaskIds.get(localTaskId);
+            if (capturedVersion !== undefined) {
+              dirtyTaskIds.delete(localTaskId);
+              dirtyTaskIds.set(remoteTaskId, capturedVersion);
+            }
+            const currentVersion = dirtyTaskIdsRef.current.get(localTaskId);
+            if (currentVersion !== undefined) {
+              dirtyTaskIdsRef.current.delete(localTaskId);
+              dirtyTaskIdsRef.current.set(remoteTaskId, currentVersion);
+            }
+          }
+
+          pendingTaskInsertIdsRef.current.delete(localTaskId);
+          setTasks((current) =>
+            acknowledgeTaskWrite(current, {
+              localTaskId,
+              remoteTaskId,
+              revision,
+            }),
+          );
+
+          if (remoteTaskId !== localTaskId) {
+            setSessions((current) =>
+              current.map((session) =>
+                session.taskId === localTaskId
+                  ? { ...session, taskId: remoteTaskId }
+                  : session,
+              ),
+            );
+            setCancellations((current) =>
+              current.map((cancellation) =>
+                cancellation.taskId === localTaskId
+                  ? { ...cancellation, taskId: remoteTaskId }
+                  : cancellation,
+              ),
+            );
+            setSelectedTaskId((current) =>
+              current === localTaskId ? remoteTaskId : current,
+            );
+            setFocusTaskId((current) =>
+              current === localTaskId ? remoteTaskId : current,
+            );
+            if (committedDraftTaskIdsRef.current.delete(localTaskId)) {
+              committedDraftTaskIdsRef.current.add(remoteTaskId);
+            }
+          }
+
+          setTaskDraft((current) =>
+            current?.id === localTaskId
+              ? acknowledgeTaskWrite([current], {
+                  localTaskId,
+                  remoteTaskId,
+                  revision,
+                })[0]
+              : current,
+          );
+        }
+
         for (const [sortOrder, task] of tasks.entries()) {
           if (!editableLocalProjectIds.has(task.projectId)) {
             continue;
@@ -2433,8 +2541,9 @@ export default function Home() {
               conflictedTaskIds.add(task.id);
               continue;
             }
-            taskRevisionMap.set(
+            acknowledgeRemoteTask(
               task.id,
+              data.id,
               normalizeInteger(
                 Number(data.revision),
                 1,
@@ -2443,32 +2552,38 @@ export default function Home() {
               ),
             );
           } else {
-            const { data, error } = await supabase!
-              .from("tasks")
-              .insert({
-                ...(isUuid(task.id) ? { id: task.id } : {}),
-                ...taskPayload,
-                created_by: syncAuthUser.id,
-              })
-              .select("id,revision")
-              .single();
-            if (error) {
-              throw new Error(error.message);
-            }
-            if (data?.id) {
-              if (data.id !== task.id) {
-                taskIdMap.set(task.id, data.id);
-              }
-              taskRevisionMap.set(
-                task.id,
-                normalizeInteger(
-                  Number(data.revision),
-                  1,
-                  Number.MAX_SAFE_INTEGER,
-                  1,
-                ),
-              );
-            }
+            const stableTaskId = isUuid(task.id)
+              ? task.id
+              : pendingTaskInsertIdsRef.current.get(task.id) ?? createUuid();
+            pendingTaskInsertIdsRef.current.set(task.id, stableTaskId);
+            const data = await executeIdempotentTaskInsert({
+              insert: () =>
+                supabase!
+                  .from("tasks")
+                  .insert({
+                    id: stableTaskId,
+                    ...taskPayload,
+                    created_by: syncAuthUser.id,
+                  })
+                  .select("id,revision")
+                  .single(),
+              lookup: () =>
+                supabase!
+                  .from("tasks")
+                  .select("id,revision")
+                  .eq("id", stableTaskId)
+                  .maybeSingle(),
+            });
+            acknowledgeRemoteTask(
+              task.id,
+              data.id,
+              normalizeInteger(
+                Number(data.revision),
+                1,
+                Number.MAX_SAFE_INTEGER,
+                1,
+              ),
+            );
           }
 
           syncedEditableTasks.push(task);
@@ -2630,6 +2745,16 @@ export default function Home() {
             continue;
           }
 
+          const shouldSyncSession =
+            shouldSyncAllWorkspace ||
+            !isUuid(session.id) ||
+            dirtySessionIds.has(session.id) ||
+            projectIdMap.has(session.projectId) ||
+            Boolean(session.taskId && taskIdMap.has(session.taskId));
+          if (!shouldSyncSession) {
+            continue;
+          }
+
           const projectId = remoteProjectId(session.projectId);
           if (!isUuid(projectId)) {
             continue;
@@ -2675,6 +2800,18 @@ export default function Home() {
 
         for (const cancellation of cancellations) {
           if (cancellation.userId && cancellation.userId !== syncAuthUser.id) {
+            continue;
+          }
+
+          const shouldSyncCancellation =
+            shouldSyncAllWorkspace ||
+            !isUuid(cancellation.id) ||
+            dirtyCancellationIds.has(cancellation.id) ||
+            projectIdMap.has(cancellation.projectId) ||
+            Boolean(
+              cancellation.taskId && taskIdMap.has(cancellation.taskId),
+            );
+          if (!shouldSyncCancellation) {
             continue;
           }
 
@@ -2738,27 +2875,72 @@ export default function Home() {
           projectIdMap,
           categoryIdMap,
           taskIdMap,
-          taskRevisionMap,
           subtaskIdMap,
           commentIdMap,
           sessionIdMap,
           cancellationIdMap,
         ].some((idMap) => idMap.size > 0);
 
-        if (cancelled) {
-          return;
+        fullRemoteSyncNeededRef.current = false;
+        dirtyProjectIds.forEach((version, projectId) => {
+          clearAcknowledgedDirtyWrite(
+            dirtyProjectIdsRef.current,
+            projectId,
+            version,
+          );
+        });
+        dirtyCategoryIds.forEach((version, categoryId) => {
+          clearAcknowledgedDirtyWrite(
+            dirtyCategoryIdsRef.current,
+            categoryId,
+            version,
+          );
+        });
+        dirtyTaskIds.forEach((version, taskId) => {
+          clearAcknowledgedDirtyWrite(
+            dirtyTaskIdsRef.current,
+            taskId,
+            version,
+          );
+        });
+        dirtySettings.forEach((version, settingsKey) => {
+          clearAcknowledgedDirtyWrite(
+            dirtySettingsRef.current,
+            settingsKey,
+            version,
+          );
+        });
+        dirtySessionIds.forEach((version, sessionId) => {
+          clearAcknowledgedDirtyWrite(
+            dirtySessionIdsRef.current,
+            sessionId,
+            version,
+          );
+        });
+        dirtyCancellationIds.forEach((version, cancellationId) => {
+          clearAcknowledgedDirtyWrite(
+            dirtyCancellationIdsRef.current,
+            cancellationId,
+            version,
+          );
+        });
+
+        function remapDirtyWrites(
+          dirtyWrites: Map<string, number>,
+          idMap: Map<string, string>,
+        ) {
+          for (const [localId, version] of [...dirtyWrites]) {
+            const remoteId = idMap.get(localId);
+            if (remoteId && remoteId !== localId) {
+              dirtyWrites.delete(localId);
+              dirtyWrites.set(remoteId, version);
+            }
+          }
         }
 
-        fullRemoteSyncNeededRef.current = false;
-        dirtyProjectIds.forEach((projectId) => {
-          dirtyProjectIdsRef.current.delete(projectId);
-        });
-        dirtyCategoryIds.forEach((categoryId) => {
-          dirtyCategoryIdsRef.current.delete(categoryId);
-        });
-        dirtyTaskIds.forEach((taskId) => {
-          dirtyTaskIdsRef.current.delete(taskId);
-        });
+        remapDirtyWrites(dirtyProjectIdsRef.current, projectIdMap);
+        remapDirtyWrites(dirtyCategoryIdsRef.current, categoryIdMap);
+        remapDirtyWrites(dirtyTaskIdsRef.current, taskIdMap);
 
         if (hasMappedIds) {
           setProjects((current) =>
@@ -2807,7 +2989,6 @@ export default function Home() {
               })),
               id: mapId(task.id, taskIdMap),
               projectId: mapId(task.projectId, projectIdMap),
-              revision: taskRevisionMap.get(task.id) ?? task.revision,
               subtasks: task.subtasks.map((subtask) => ({
                 ...subtask,
                 id: mapId(subtask.id, subtaskIdMap),
@@ -2840,6 +3021,7 @@ export default function Home() {
         } else {
           lastRemoteSyncJsonRef.current = snapshotJson;
         }
+        remoteSyncRetryAttemptRef.current = 0;
       } catch (error) {
         if (!cancelled) {
           setProjectNotice(
@@ -2847,11 +3029,28 @@ export default function Home() {
               ? `Sync issue: ${error.message}`
               : "Sync issue: your latest changes stayed in this browser.",
           );
+          if (remoteSyncRetryTimeoutRef.current !== null) {
+            window.clearTimeout(remoteSyncRetryTimeoutRef.current);
+          }
+          const retry = scheduleWorkspaceSyncRetry({
+            attempt: remoteSyncRetryAttemptRef.current,
+            onRetry: () => {
+              remoteSyncRetryTimeoutRef.current = null;
+              setRemoteSyncRequestId((current) => current + 1);
+            },
+            setTimeoutFn: window.setTimeout,
+          });
+          remoteSyncRetryAttemptRef.current += 1;
+          remoteSyncRetryTimeoutRef.current = retry.timerId as unknown as number;
         }
       } finally {
         remoteSyncInFlightRef.current = false;
         if (remoteSyncQueuedRef.current) {
           remoteSyncQueuedRef.current = false;
+          if (remoteSyncRetryTimeoutRef.current !== null) {
+            window.clearTimeout(remoteSyncRetryTimeoutRef.current);
+            remoteSyncRetryTimeoutRef.current = null;
+          }
           setRemoteSyncRequestId((current) => current + 1);
         } else {
           workspaceInvalidationSchedulerRef.current?.notifyWorkspaceClean();
@@ -2883,6 +3082,16 @@ export default function Home() {
     settings,
     tasks,
   ]);
+
+  useEffect(
+    () => () => {
+      if (remoteSyncRetryTimeoutRef.current !== null) {
+        window.clearTimeout(remoteSyncRetryTimeoutRef.current);
+        remoteSyncRetryTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.themeMode;
@@ -2930,12 +3139,17 @@ export default function Home() {
     let alive = true;
     const scheduler = createWorkspaceInvalidationScheduler({
       isBlocked: () =>
-        remoteSyncInFlightRef.current ||
-        remoteSyncQueuedRef.current ||
-        fullRemoteSyncNeededRef.current ||
-        dirtyProjectIdsRef.current.size > 0 ||
-        dirtyCategoryIdsRef.current.size > 0 ||
-        dirtyTaskIdsRef.current.size > 0,
+        hasPendingWorkspaceWrites({
+          dirtyCancellationIds: dirtyCancellationIdsRef.current,
+          dirtyCategoryIds: dirtyCategoryIdsRef.current,
+          dirtyProjectIds: dirtyProjectIdsRef.current,
+          dirtySessionIds: dirtySessionIdsRef.current,
+          dirtySettings: dirtySettingsRef.current,
+          dirtyTaskIds: dirtyTaskIdsRef.current,
+          fullRemoteSyncNeeded: fullRemoteSyncNeededRef.current,
+          remoteSyncInFlight: remoteSyncInFlightRef.current,
+          remoteSyncQueued: remoteSyncQueuedRef.current,
+        }),
       refresh: async () => {
         try {
           await refreshRemoteWorkspace();
@@ -3162,17 +3376,49 @@ export default function Home() {
     return projects.find((project) => project.id === projectId)?.currentUserRole !== "viewer";
   }
 
-  function markProjectDirty(projectId: string) {
-    dirtyProjectIdsRef.current.add(projectId);
-  }
+  const markDirtyWrite = useCallback(
+    (dirtyWrites: Map<string, number>, recordId: string) => {
+      workspaceWriteVersionRef.current += 1;
+      dirtyWrites.set(recordId, workspaceWriteVersionRef.current);
+    },
+    [],
+  );
 
-  function markCategoryDirty(categoryId: string) {
-    dirtyCategoryIdsRef.current.add(categoryId);
-  }
+  const markProjectDirty = useCallback((projectId: string) => {
+    markDirtyWrite(dirtyProjectIdsRef.current, projectId);
+  }, [markDirtyWrite]);
 
-  function markTaskDirty(taskId: string) {
-    dirtyTaskIdsRef.current.add(taskId);
-  }
+  const markCategoryDirty = useCallback((categoryId: string) => {
+    markDirtyWrite(dirtyCategoryIdsRef.current, categoryId);
+  }, [markDirtyWrite]);
+
+  const markTaskDirty = useCallback((taskId: string) => {
+    markDirtyWrite(dirtyTaskIdsRef.current, taskId);
+  }, [markDirtyWrite]);
+
+  const markSettingsDirty = useCallback(() => {
+    markDirtyWrite(dirtySettingsRef.current, "settings");
+  }, [markDirtyWrite]);
+
+  const markSessionDirty = useCallback((sessionId: string) => {
+    markDirtyWrite(dirtySessionIdsRef.current, sessionId);
+  }, [markDirtyWrite]);
+
+  const markCancellationDirty = useCallback((cancellationId: string) => {
+    markDirtyWrite(dirtyCancellationIdsRef.current, cancellationId);
+  }, [markDirtyWrite]);
+
+  const updateSettings = useCallback(
+    (
+      nextSettings:
+        | UserSettings
+        | ((currentSettings: UserSettings) => UserSettings),
+    ) => {
+      markSettingsDirty();
+      setSettings(nextSettings);
+    },
+    [markSettingsDirty],
+  );
 
   const beginPomodoroTimer = useCallback((durationMinutes: number) => {
     const durationSeconds = durationMinutes * 60;
@@ -3205,7 +3451,7 @@ export default function Home() {
         id: createUuid(),
         userId: appUserId,
         projectId: sessionProjectId,
-        taskId: completedTask?.id ?? null,
+        taskId: taskIdForTimerRecord(completedTask),
         minutes,
         completedAt,
         note: note.trim() || "Focused session completed.",
@@ -3217,15 +3463,17 @@ export default function Home() {
         project_kind: sessionProject?.kind ?? "unknown",
       });
 
+      markSessionDirty(session.id);
       setSessions((current) => [session, ...current]);
 
       const canUpdateCompletedTask =
         completedTask &&
+        !completedTask.remoteDetached &&
         projects.find((project) => project.id === completedTask.projectId)
           ?.currentUserRole !== "viewer";
 
       if (completedTask && canUpdateCompletedTask) {
-        dirtyTaskIdsRef.current.add(completedTask.id);
+        markTaskDirty(completedTask.id);
         setTasks((current) =>
           current.map((task) =>
             task.id === completedTask.id
@@ -3252,6 +3500,8 @@ export default function Home() {
       appUserId,
       clearPomodoroDeadline,
       focusTask,
+      markSessionDirty,
+      markTaskDirty,
       projects,
       settings.focusMinutes,
     ],
@@ -3749,19 +3999,50 @@ export default function Home() {
       return;
     }
 
-    if (supabase && authUser && isUuid(task.id)) {
-      const { error } = await supabase.from("tasks").delete().eq("id", task.id);
-
-      if (error) {
-        setProjectNotice(error.message);
+    if (supabase && authUser && isUuid(task.id) && task.revision > 0) {
+      markTaskDirty(task.id);
+      try {
+        const result = await deleteTaskWithRevision({
+          client: supabase,
+          expectedRevision: task.revision,
+          taskId: task.id,
+        });
+        dirtyTaskIdsRef.current.delete(task.id);
+        if (result.conflict) {
+          setProjectNotice("Task changed elsewhere. Reloaded the latest workspace.");
+          workspaceInvalidationSchedulerRef.current?.requestInvalidation();
+          return;
+        }
+      } catch (error) {
+        dirtyTaskIdsRef.current.delete(task.id);
+        workspaceInvalidationSchedulerRef.current?.notifyWorkspaceClean();
+        setProjectNotice(
+          error instanceof Error ? error.message : "Tockli could not delete the task.",
+        );
         return;
       }
     }
 
+    dirtyTaskIdsRef.current.delete(taskId);
+    const affectedSessionIds = sessions
+      .filter((session) => session.taskId === taskId)
+      .map((session) => session.id);
+    const affectedCancellationIds = cancellations
+      .filter((cancellation) => cancellation.taskId === taskId)
+      .map((cancellation) => cancellation.id);
+    affectedSessionIds.forEach(markSessionDirty);
+    affectedCancellationIds.forEach(markCancellationDirty);
     setTasks((current) => current.filter((task) => task.id !== taskId));
     setSessions((current) =>
       current.map((session) =>
         session.taskId === taskId ? { ...session, taskId: null } : session,
+      ),
+    );
+    setCancellations((current) =>
+      current.map((cancellation) =>
+        cancellation.taskId === taskId
+          ? { ...cancellation, taskId: null }
+          : cancellation,
       ),
     );
 
@@ -4368,7 +4649,7 @@ export default function Home() {
     }
 
     const focusMinutes = Math.min(180, Math.max(5, Math.round(minutes) || 5));
-    setSettings((current) => ({ ...current, focusMinutes }));
+    updateSettings((current) => ({ ...current, focusMinutes }));
     setSessionDurationMinutes(focusMinutes);
     setRemainingSeconds(focusMinutes * 60);
     trackEvent("settings_updated", {
@@ -4437,7 +4718,7 @@ export default function Home() {
       id: createUuid(),
       userId: appUserId,
       projectId,
-      taskId: task?.id ?? null,
+      taskId: taskIdForTimerRecord(task),
       durationMinutes: sessionDurationMinutes,
       elapsedMinutes: Math.floor(elapsedSeconds / 60),
       reason,
@@ -4445,6 +4726,7 @@ export default function Home() {
       note: sessionNote.trim(),
     };
 
+    markCancellationDirty(cancellation.id);
     setCancellations((current) => [cancellation, ...current]);
     trackEvent("timer_cancelled", {
       elapsed_minutes: cancellation.elapsedMinutes,
@@ -5102,7 +5384,7 @@ export default function Home() {
                   className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
                   type="button"
                   onClick={() =>
-                    setSettings((current) => ({
+                    updateSettings((current) => ({
                       ...current,
                       themeMode: current.themeMode === "dark" ? "light" : "dark",
                     }))
@@ -5270,7 +5552,7 @@ export default function Home() {
                 onPreviewSound={previewFocusSound}
                 profilePlan={profilePlan}
                 settings={settings}
-                setSettings={setSettings}
+                setSettings={updateSettings}
                 teamProjectCount={teamProjectCount}
                 timerLocked={
                   isRunning ||
