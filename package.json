@@ -21,6 +21,7 @@
     "test:tockli:cli": "node --test tests/tockli-cli.test.mjs",
     "test:tockli:cli:integration": "node --test tests/tockli-cli.local.test.mjs",
     "test:tockli:integration": "node --test tests/tockli-api.local.test.mjs",
+    "test:tockli:mcp": "node --test tests/tockli-mcp.local.test.mjs",
     "test:ui": "node --test tests/workspace-ui.test.mjs",
     "test:all": "pnpm test && pnpm run test:db",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
@@ -32,12 +33,14 @@
     "env:hosted": "node scripts/switch-env.mjs hosted"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@supabase/supabase-js": "^2.110.8",
     "lucide-react": "^1.25.0",
     "next": "16.2.6",
     "posthog-js": "^1.413.3",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
