@@ -183,6 +183,15 @@ function textOf(result) {
   return result.content[0].text;
 }
 
+function assertStructuredValidation(result, toolName) {
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent?.error, {
+    code: "TOCKLI_VALIDATION",
+    message: `Invalid arguments for tool '${toolName}'.`,
+  });
+  assert.match(textOf(result), /^TOCKLI_VALIDATION:/);
+}
+
 test("real MCP SDK client exercises the local stdio server protocol", {
   timeout: TEST_TIMEOUT_MS,
 }, async (t) => {
@@ -261,6 +270,38 @@ test("real MCP SDK client exercises the local stdio server protocol", {
   ]);
   assert.equal(byName.get("create_task").inputSchema.properties.projectId.format, "uuid");
   assert.equal(byName.get("update_task").inputSchema.properties.taskId.format, "uuid");
+
+  assertStructuredValidation(
+    await client.callTool({
+      name: "list_tasks",
+      arguments: { projectId: "not-a-uuid" },
+    }),
+    "list_tasks",
+  );
+  assertStructuredValidation(
+    await client.callTool({
+      name: "create_task",
+      arguments: { projectId: PROJECT_ID },
+    }),
+    "create_task",
+  );
+  assertStructuredValidation(
+    await client.callTool({
+      name: "get_current_user",
+      arguments: { unexpected: true },
+    }),
+    "get_current_user",
+  );
+  assertStructuredValidation(
+    await client.callTool({
+      name: "complete_task",
+      arguments: {
+        taskId: "20000000-0000-4000-8000-00000000c104",
+        expectedRevision: 0,
+      },
+    }),
+    "complete_task",
+  );
 
   const currentUser = await client.callTool({ name: "get_current_user", arguments: {} });
   assert.equal(currentUser.isError, undefined, JSON.stringify(currentUser));
