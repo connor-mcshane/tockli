@@ -127,7 +127,7 @@ async function runSmoke() {
     assert.doesNotMatch(appHtml, />Kanban</);
 
     const sitemapXml = await fetchText(baseUrl, "/sitemap.xml");
-    assert.match(sitemapXml, /\/login/);
+    assert.doesNotMatch(sitemapXml, /\/login/);
     assert.match(sitemapXml, /\/privacy/);
     assert.match(sitemapXml, /\/terms/);
     assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);

@@ -28,7 +28,9 @@ test("server-renders the protected Tockli app gate", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Tockli - Focus timer and task board<\/title>/i);
+  assert.match(html, /<title>Tockli workspace<\/title>/i);
+  assert.match(html, /<meta name="robots" content="nofollow, noindex, nocache"/i);
+  assert.doesNotMatch(html, /<link rel="canonical"/i);
   assert.match(html, /Tockli/);
   assert.match(html, /Checking your session/);
   assert.match(html, /open your workspace once login is confirmed/);
@@ -57,10 +59,8 @@ test("server-renders launch marketing routes", async () => {
   assert.match(homeHtml, /Show up. Focus. Finish/);
 
   const landing = await render("/landing");
-  assert.equal(landing.status, 200);
-  const landingHtml = await landing.text();
-  assert.match(landingHtml, /Find out your focus score/);
-  assert.doesNotMatch(landingHtml, /Open the workspace/);
+  assert.ok([301, 307, 308].includes(landing.status));
+  assert.equal(new URL(landing.headers.get("location"), "http://localhost").pathname, "/");
 
   const signup = await render("/signup");
   assert.equal(signup.status, 200);
@@ -73,12 +73,26 @@ test("server-renders launch marketing routes", async () => {
   const loginHtml = await login.text();
   assert.match(loginHtml, /Log in and pick up your next focus block/);
   assert.match(loginHtml, /Continue with Google/);
+  assert.match(loginHtml, /<meta name="robots" content="follow, noindex"/i);
 
   const account = await render("/account");
   assert.equal(account.status, 200);
   const accountHtml = await account.text();
-  assert.match(accountHtml, /Account Management/);
+  assert.match(accountHtml, /Account management/);
   assert.match(accountHtml, /Loading account details/);
+  assert.match(accountHtml, /<title>Account management \| Tockli<\/title>/i);
+  assert.match(accountHtml, /<meta name="robots" content="nofollow, noindex"/i);
+  assert.doesNotMatch(accountHtml, /<link rel="canonical"/i);
+
+  const authCallback = await render("/auth/callback");
+  assert.equal(authCallback.status, 200);
+  const authCallbackHtml = await authCallback.text();
+  assert.match(authCallbackHtml, /<title>Finishing sign in \| Tockli<\/title>/i);
+  assert.match(
+    authCallbackHtml,
+    /<meta name="robots" content="nofollow, noindex, nocache"/i,
+  );
+  assert.doesNotMatch(authCallbackHtml, /<link rel="canonical"/i);
 
   const blog = await render("/blog");
   assert.equal(blog.status, 200);
@@ -91,7 +105,11 @@ test("server-renders launch marketing routes", async () => {
   const article = await render("/blog/focus-timer-with-a-task-board");
   assert.equal(article.status, 200);
   const articleHtml = await article.text();
-  assert.match(articleHtml, /Start with the work, then start the clock/);
+  assert.match(articleHtml, /A timer solves the second problem/);
+  assert.match(articleHtml, /By Tockli/);
+  assert.match(articleHtml, /pomodoro-task-board\.jpg/);
+  assert.match(articleHtml, /application\/ld\+json/);
+  assert.match(articleHtml, /Keep reading/);
 
   const privacy = await render("/privacy");
   assert.equal(privacy.status, 200);
@@ -113,14 +131,18 @@ test("server-renders SEO discovery routes", async () => {
   assert.equal(sitemap.status, 200);
   const sitemapXml = await sitemap.text();
   assert.match(sitemapXml, /<loc>.*\/<\/loc>/);
-  assert.match(sitemapXml, /\/login/);
+  assert.doesNotMatch(sitemapXml, /\/login/);
   assert.match(sitemapXml, /\/privacy/);
   assert.match(sitemapXml, /\/terms/);
   assert.match(sitemapXml, /\/blog\/analytics-that-help-you-focus/);
+  assert.match(sitemapXml, /\/blog\/pomodoro-task-board-setup/);
+  assert.match(sitemapXml, /\/blog\/how-to-calculate-focus-score/);
+  assert.match(sitemapXml, /\/blog\/focus-timer-vs-to-do-list/);
 
   const robots = await render("/robots.txt");
   assert.equal(robots.status, 200);
   const robotsTxt = await robots.text();
-  assert.match(robotsTxt, /Disallow: \/app/);
+  assert.doesNotMatch(robotsTxt, /Disallow: \/app/);
+  assert.match(robotsTxt, /Disallow: \/api\//);
   assert.match(robotsTxt, /Sitemap: .*\/sitemap.xml/);
 });

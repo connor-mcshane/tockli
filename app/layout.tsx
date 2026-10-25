@@ -28,9 +28,6 @@ export const metadata: Metadata = {
     "productivity app",
     "focus analytics",
   ],
-  alternates: {
-    canonical: "/",
-  },
   openGraph: {
     title: "Tockli - Focus timer and task board",
     description: siteConfig.description,
@@ -45,7 +42,6 @@ export const metadata: Metadata = {
     locale: "en_US",
     siteName: "Tockli",
     type: "website",
-    url: "/",
   },
   twitter: {
     card: "summary_large_image",

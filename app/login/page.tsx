@@ -15,6 +15,10 @@ export const metadata: Metadata = {
     images: ["/og.png"],
     url: "/login",
   },
+  robots: {
+    follow: true,
+    index: false,
+  },
 };
 
 export default function LoginPage() {

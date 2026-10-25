@@ -2,6 +2,8 @@
 
 import posthog, { type CaptureResult } from "posthog-js";
 import {
+  getAnalyticsCampaignProperties,
+  getPostHogEventName,
   privacySignalsAllowAnalytics,
   sanitizeAnalyticsProperties,
   sanitizeAnalyticsReferrer,
@@ -246,10 +248,10 @@ export function initializeAnalytics() {
       before_send: sanitizePostHogUrlProperties,
       capture_exceptions: false,
       capture_heatmaps: false,
-      capture_pageleave: false,
+      capture_pageleave: true,
       capture_pageview: false,
       capture_performance: false,
-      defaults: "2026-05-30",
+      defaults: "2026-08-30",
       disable_persistence: true,
       disable_session_recording: true,
       opt_out_capturing_by_default: true,
@@ -349,7 +351,14 @@ export function trackEvent(
     return;
   }
 
-  const safeProperties = sanitizeAnalyticsProperties(properties) as AnalyticsProperties;
+  const campaignProperties =
+    name === "page_view"
+      ? getAnalyticsCampaignProperties(window.location.href)
+      : {};
+  const safeProperties = sanitizeAnalyticsProperties({
+    ...campaignProperties,
+    ...properties,
+  }) as AnalyticsProperties;
   const payload: AnalyticsPayload = {
     name,
     properties: safeProperties,
@@ -366,8 +375,9 @@ export function trackEvent(
 
   if (initializeAnalytics()) {
     try {
-      posthog.capture(name, {
+      posthog.capture(getPostHogEventName(name), {
         ...safeProperties,
+        $current_url: `${window.location.origin}${window.location.pathname}`,
         path: payload.path,
         referrer: payload.referrer,
       });

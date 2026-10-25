@@ -13,10 +13,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.9,
     },
     {
-      path: "/login",
-      priority: 0.6,
-    },
-    {
       path: "/blog",
       priority: 0.7,
     },
