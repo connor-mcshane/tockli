@@ -3,7 +3,7 @@ import Link from "next/link";
 import MarketingFooter from "@/app/MarketingFooter";
 import MarketingHeader from "@/app/MarketingHeader";
 
-const lastUpdated = "2026-08-07";
+const lastUpdated = "2026-10-25";
 const contactEmail = "hello@tockli.com";
 
 export const metadata: Metadata = {
@@ -57,7 +57,7 @@ export default function PrivacyPage() {
           </p>
           <p className="mt-5 text-sm font-semibold text-[#6a6965]">
             Last updated{" "}
-            <time dateTime={lastUpdated}>7 August 2026</time>
+            <time dateTime={lastUpdated}>25 October 2026</time>
           </p>
         </div>
       </section>
@@ -169,7 +169,7 @@ export default function PrivacyPage() {
               </strong>{" "}
               If you sign up from the landing page, Tockli stores the email
               address you gave, the role and intent you selected, where you
-              arrived from, and which landing-page variant you saw.
+              arrived from.
             </li>
           </ul>
         </Section>
@@ -228,13 +228,6 @@ export default function PrivacyPage() {
               remember it. Analytics does not start while no choice has been
               made.
             </li>
-            <li>
-              <strong className="font-semibold text-[#1a1c1b]">
-                <code className="font-mono text-sm">tockli.experiments</code>.
-              </strong>{" "}
-              Which sign-up experiment variant you were assigned, held in local
-              storage so it does not change between visits.
-            </li>
           </ul>
           <p>
             Earlier builds used the keys{" "}
@@ -242,8 +235,8 @@ export default function PrivacyPage() {
               flowtimer.analytics.anonymousId
             </code>{" "}
             and <code className="font-mono text-sm">flowtimer.experiments</code>
-            . Old anonymous analytics identifiers are deleted. Experiment
-            assignments are moved to the current key and the old key is deleted.
+            . Old anonymous analytics identifiers are deleted. Inactive experiment
+            assignments are no longer used by the sign-up flow.
           </p>
           <p>
             Clearing your browser storage removes all of the above and signs
@@ -257,7 +250,8 @@ export default function PrivacyPage() {
             PostHog project hosted in the EU. These actions include page views,
             sign-up and login steps, task and timer actions, Focus Score views,
             and calls to action. Each event can include its time, the route path
-            without its query string, and basic browser or device information.
+            without its query string, allowlisted campaign tags such as UTM source
+            and campaign, and basic browser or device information.
             Before sign-in, a random identifier exists only in memory. After
             sign-in, Tockli may use your opaque Supabase account ID so a product
             journey can be understood across devices.

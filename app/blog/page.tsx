@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { ArrowRight, Clock3 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
+import MarketingFooter from "@/app/MarketingFooter";
 import MarketingHeader from "@/app/MarketingHeader";
 import { blogArticles } from "@/lib/marketing";
 
@@ -44,17 +46,30 @@ export default function BlogIndexPage() {
         {blogArticles.map((article) => (
           <article
             key={article.slug}
-            className="grid gap-5 rounded-lg border border-[#e8e8e6] bg-white p-5 transition hover:border-[#d4d3cf] hover:shadow-[0_10px_28px_rgba(26,28,27,0.08)] md:grid-cols-[minmax(0,0.75fr)_minmax(0,1.5fr)_auto]"
+            className="grid gap-5 overflow-hidden rounded-lg border border-[#e8e8e6] bg-white p-4 transition hover:border-[#d4d3cf] hover:shadow-[0_10px_28px_rgba(26,28,27,0.08)] md:grid-cols-[minmax(220px,0.7fr)_minmax(0,1.3fr)_auto] md:items-center"
           >
-            <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase text-[#6a6965]">
-              <span>{article.category}</span>
-              <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
-              <span className="flex items-center gap-1">
-                <Clock3 size={14} aria-hidden="true" />
-                {article.readMinutes} min read
-              </span>
-            </div>
+            <Link
+              aria-label={`Read ${article.title}`}
+              className="relative block aspect-[3/2] overflow-hidden rounded-md bg-[#ececea]"
+              href={`/blog/${article.slug}`}
+            >
+              <Image
+                alt={article.imageAlt}
+                className="object-cover transition duration-300 hover:scale-[1.02]"
+                fill
+                sizes="(min-width: 768px) 28vw, 100vw"
+                src={article.image}
+              />
+            </Link>
             <div>
+              <div className="flex flex-wrap items-center gap-3 text-xs font-semibold uppercase text-[#6a6965]">
+                <span>{article.category}</span>
+                <span className="h-1 w-1 rounded-full bg-[#d8d7d3]" />
+                <span className="flex items-center gap-1">
+                  <Clock3 size={14} aria-hidden="true" />
+                  {article.readMinutes} min read
+                </span>
+              </div>
               <h2 className="text-2xl font-semibold leading-tight">
                 <Link
                   className="transition hover:text-[#ff005e]"
@@ -77,6 +92,8 @@ export default function BlogIndexPage() {
           </article>
         ))}
       </section>
+
+      <MarketingFooter />
     </main>
   );
 }

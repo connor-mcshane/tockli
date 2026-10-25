@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  getAnalyticsCampaignProperties,
+  getPostHogEventName,
   privacySignalsAllowAnalytics,
   sanitizeAnalyticsProperties,
   sanitizeAnalyticsReferrer,
@@ -46,4 +48,23 @@ test("analytics referrers never retain query strings or fragments", () => {
     "https://example.com/invite",
   );
   assert.equal(sanitizeAnalyticsReferrer("not a URL"), "");
+});
+
+test("analytics keeps only allowlisted campaign parameters", () => {
+  assert.deepEqual(
+    getAnalyticsCampaignProperties(
+      "https://tockli.com/?utm_source=google&utm_medium=cpc&utm_campaign=focus%20timer&invite=secret&code=private",
+    ),
+    {
+      $utm_campaign: "focus timer",
+      $utm_medium: "cpc",
+      $utm_source: "google",
+    },
+  );
+  assert.deepEqual(getAnalyticsCampaignProperties("not a url"), {});
+});
+
+test("PostHog receives its reserved pageview event name", () => {
+  assert.equal(getPostHogEventName("page_view"), "$pageview");
+  assert.equal(getPostHogEventName("cta_clicked"), "cta_clicked");
 });

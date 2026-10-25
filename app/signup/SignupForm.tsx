@@ -13,7 +13,6 @@ import Link from "next/link";
 import { type FormEvent, useEffect, useState } from "react";
 import MarketingHeader from "@/app/MarketingHeader";
 import { trackEvent } from "@/lib/analytics";
-import { getExperimentVariant, landingHeroExperiment } from "@/lib/experiments";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type SignupStatus = "idle" | "submitting" | "success" | "error";
@@ -56,23 +55,14 @@ export default function SignupForm() {
   const [message, setMessage] = useState("");
   const [nextPath, setNextPath] = useState("/app?onboarding=1");
   const [source, setSource] = useState("direct");
-  const [experiment, setExperiment] = useState<{ id: string; variant: string }>({
-    id: landingHeroExperiment.id,
-    variant: landingHeroExperiment.variants[0].id,
-  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const assignedVariant = getExperimentVariant(landingHeroExperiment);
     const sourceParam = params.get("source");
     const safeNext = getSafeNext(params.get("next"));
     window.requestAnimationFrame(() => {
       setNextPath(safeNext);
       setSource(sourceParam ?? (document.referrer ? "referral" : "direct"));
-      setExperiment({
-        id: landingHeroExperiment.id,
-        variant: assignedVariant.id,
-      });
     });
   }, []);
 
@@ -82,8 +72,6 @@ export default function SignupForm() {
       role,
       intent,
       source,
-      experiment_id: experiment.id,
-      experiment_variant: experiment.variant,
     };
 
     if (supabase) {
@@ -147,8 +135,6 @@ export default function SignupForm() {
       role,
       intent,
       source,
-      experiment_id: experiment.id,
-      variant: experiment.variant,
     });
     trackEvent("auth_signup_started", {
       method: "email_password",
@@ -165,8 +151,6 @@ export default function SignupForm() {
           role,
           intent,
           source,
-          experiment_id: experiment.id,
-          variant: experiment.variant,
         });
         setStatus("success");
         setMessage("Signup intent saved locally. Add Supabase env vars to create accounts.");
@@ -196,8 +180,6 @@ export default function SignupForm() {
         role,
         intent,
         source,
-        experiment_id: experiment.id,
-        variant: experiment.variant,
       });
       trackEvent("auth_signup_succeeded", {
         method: "email_password",

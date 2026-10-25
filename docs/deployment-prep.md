@@ -5,7 +5,7 @@ values are configured. The current build puts the public marketing funnel at
 `/` and keeps the working app behind `/app`:
 
 - `/` - SEO landing page with the product screenshot and CTA tracking
-- `/landing` - legacy landing-page alias
+- `/landing` - permanent redirect to the canonical homepage
 - `/signup` - account signup with Supabase Auth and beta-intent capture
 - `/login` - Supabase email/password and Google login
 - `/auth/callback` - OAuth callback route
@@ -14,6 +14,9 @@ values are configured. The current build puts the public marketing funnel at
 - `/blog/focus-timer-with-a-task-board`
 - `/blog/lightweight-sharing-for-small-teams`
 - `/blog/analytics-that-help-you-focus`
+- `/blog/pomodoro-task-board-setup`
+- `/blog/how-to-calculate-focus-score`
+- `/blog/focus-timer-vs-to-do-list`
 - `/sitemap.xml` and `/robots.txt`
 
 ## Required Runtime Values
@@ -51,9 +54,9 @@ them, the invite route uses Supabase's built-in invite email template.
 - Enable email/password signups in Supabase Auth.
 - Enable Google as a Supabase Auth provider before promoting the Google auth
   buttons.
-- Set the Supabase production site URL to `https://tockli.netlify.app`.
+- Set the Supabase production site URL to `https://tockli.com`.
 - Add Supabase redirect URLs:
-  `https://tockli.netlify.app/auth/callback` and
+  `https://tockli.com/auth/callback` and
   `http://localhost:3000/auth/callback`.
 - Confirm `public.marketing_signups` allows anonymous inserts and does not allow
   anonymous reads.
@@ -125,7 +128,7 @@ and lets visitors decline, allow, or later change analytics. Do Not Track and
 Global Privacy Control always disable collection.
 
 PostHog defaults to EU ingestion and uses memory-only persistence. Tockli sends
-only explicit named events, route paths, and PostHog's basic browser/device
+only explicit named events, route paths, allowlisted UTM campaign fields, and PostHog's basic browser/device
 metadata; automatic click capture, session recordings, exception capture,
 performance capture, cookies, and GeoIP enrichment are disabled. Signed-in users
 are identified by their opaque Supabase UUID so cross-device funnels work. Email,
@@ -137,7 +140,14 @@ account-ID data above, state the purpose (understanding adoption and improving
 the product), identify the EU hosting location and retention period chosen in
 PostHog, and explain how to reopen **Analytics settings** to withdraw consent.
 
-Current event names:
+The client maps the internal `page_view` event to PostHog's reserved
+`$pageview` event and enables `$pageleave`, so PostHog's Web Analytics views and
+session-duration calculations receive the event names they expect. Add
+`https://tockli.com` under **PostHog project settings → Authorized URLs** before
+using URL-based filters. Add `http://localhost:3000` separately only when local
+analytics testing is intentional.
+
+Current internal event names (with `page_view` sent to PostHog as `$pageview`):
 
 - `page_view`
 - `cta_clicked`
@@ -190,18 +200,10 @@ Current event names:
 
 ## A/B Test Framework
 
-`lib/experiments.ts` assigns variants deterministically from a local anonymous
-seed and `NEXT_PUBLIC_EXPERIMENT_SALT`. The first experiment is
-`landing-hero-2026-07`, which changes the landing page hero message and CTA.
-
-Before interpreting results, pick one primary metric:
-
-- Signup conversion from `/` to `/signup`
-- Email signup completion
-- Open-app click-through
-
-Keep one active landing experiment at a time until traffic is large enough to
-support more.
+`lib/experiments.ts` remains available for future tests, but no landing-page
+experiment is currently active. When starting a new test, choose one primary
+metric, document the variants, and avoid overlapping homepage experiments until
+traffic is large enough to interpret them reliably.
 
 ## Pre-Deploy Validation
 
