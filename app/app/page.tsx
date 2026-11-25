@@ -217,6 +217,19 @@ type FocusSession = {
   note: string;
 };
 
+type MomentumStatus = "rest" | "future" | "missed" | "showed_up" | "goal";
+
+type MomentumDay = {
+  key: string;
+  date: Date;
+  label: string;
+  sessions: number;
+  completedTasks: number;
+  planned: boolean;
+  status: MomentumStatus;
+  isToday: boolean;
+};
+
 type PomodoroCancellation = {
   id: string;
   userId?: string;
@@ -618,7 +631,7 @@ function createDefaultBoardColumns(): BoardColumn[] {
 const navItems: Array<{ id: View; label: string; icon: typeof FolderKanban }> = [
   { id: "board", label: "Board", icon: FolderKanban },
   { id: "timer", label: "Focus Timer", icon: Clock3 },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
+  { id: "analytics", label: "Momentum", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -637,6 +650,128 @@ function isoDate(offsetDays = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
   return date.toISOString().slice(0, 10);
+}
+
+function localDateKey(value: string | Date) {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function momentumStatus({
+  date,
+  planned,
+  sessions,
+  dailyGoal,
+  today,
+}: {
+  date: Date;
+  planned: boolean;
+  sessions: number;
+  dailyGoal: number;
+  today: Date;
+}): MomentumStatus {
+  if (date > today) return "future";
+  if (sessions >= dailyGoal) return "goal";
+  if (sessions > 0) return "showed_up";
+  return planned ? "missed" : "rest";
+}
+
+function buildMomentumDays({
+  dates,
+  sessions,
+  settings,
+  tasks,
+  today,
+}: {
+  dates: Date[];
+  sessions: FocusSession[];
+  settings: UserSettings;
+  tasks: Task[];
+  today: Date;
+}): MomentumDay[] {
+  const plannedDays = settings.workingDays.length
+    ? settings.workingDays
+    : weekdays;
+  const sessionCounts = new Map<string, number>();
+  sessions.forEach((session) => {
+    const key = localDateKey(session.completedAt);
+    sessionCounts.set(key, (sessionCounts.get(key) ?? 0) + 1);
+  });
+
+  const taskCounts = new Map<string, number>();
+  tasks.forEach((task) => {
+    if (!task.completedAt) return;
+    const key = localDateKey(task.completedAt);
+    taskCounts.set(key, (taskCounts.get(key) ?? 0) + 1);
+  });
+
+  return dates.map((date) => {
+    const key = localDateKey(date);
+    const sessionsForDay = sessionCounts.get(key) ?? 0;
+    const weekday = date.toLocaleDateString("en", { weekday: "short" });
+    const planned = plannedDays.includes(weekday);
+
+    return {
+      key,
+      date,
+      label: date.toLocaleDateString("en", {
+        month: "short",
+        day: "numeric",
+        weekday: "short",
+      }),
+      sessions: sessionsForDay,
+      completedTasks: taskCounts.get(key) ?? 0,
+      planned,
+      status: momentumStatus({
+        date,
+        planned,
+        sessions: sessionsForDay,
+        dailyGoal: settings.dailyPomodoroGoal,
+        today,
+      }),
+      isToday: key === localDateKey(today),
+    };
+  });
+}
+
+function currentCalendarWeek(today: Date) {
+  const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const offset = (monday.getDay() + 6) % 7;
+  monday.setDate(monday.getDate() - offset);
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(monday);
+    date.setDate(date.getDate() + index);
+    return date;
+  });
+}
+
+function momentumStatusLabel(status: MomentumStatus) {
+  if (status === "goal") return "Goal reached";
+  if (status === "showed_up") return "Showed up";
+  if (status === "missed") return "Planned day missed";
+  if (status === "future") return "Upcoming day";
+  return "Rest day";
+}
+
+function momentumCellClass(status: MomentumStatus) {
+  if (status === "goal") {
+    return "border-[var(--accent)] bg-[var(--accent)] text-white shadow-[var(--shadow-accent-soft)]";
+  }
+  if (status === "showed_up") {
+    return "border-[var(--accent-border)] bg-[var(--accent-soft-hover)] text-[var(--danger)]";
+  }
+  if (status === "missed") {
+    return "border-[var(--border-strong)] bg-[var(--surface)] text-[var(--subtle)]";
+  }
+  if (status === "future") {
+    return "border-transparent bg-[var(--surface-soft)] text-[var(--subtle)] opacity-45";
+  }
+  return "border-transparent bg-[var(--surface-hover)] text-[var(--muted)]";
 }
 
 function toDateInputValue(value: string) {
@@ -3674,6 +3809,15 @@ export default function Home() {
     isToday(session.completedAt),
   ).length;
   const progressPercent = Math.min(100, (todaysPomodoros / activeGoal) * 100);
+  const momentumToday = new Date();
+  momentumToday.setHours(0, 0, 0, 0);
+  const boardMomentumDays = buildMomentumDays({
+    dates: currentCalendarWeek(momentumToday),
+    sessions,
+    settings,
+    tasks,
+    today: momentumToday,
+  });
 
   const completeFocusSession = useCallback(
     (minutes: number, note: string, completedAt = new Date().toISOString()) => {
@@ -5714,6 +5858,7 @@ export default function Home() {
                   onAddTask={addTask}
                   onArchiveColumn={archiveBoardColumn}
                   onDeleteColumn={deleteBoardColumn}
+                  onOpenMomentum={() => setView("analytics")}
                   onRenameColumn={renameBoardColumn}
                   onReorderColumn={reorderBoardColumn}
                   onRestoreColumn={restoreBoardColumn}
@@ -5722,6 +5867,7 @@ export default function Home() {
                   onTaskStatusChange={moveTask}
                   onToggleTag={toggleTag}
                   progressPercent={progressPercent}
+                  momentumDays={boardMomentumDays}
                   projectTasks={filteredProjectTasks}
                   searchQuery={taskSearchQuery}
                   archivedColumns={archivedBoardColumns}
@@ -6568,6 +6714,7 @@ function BoardView({
   onAddTask,
   onArchiveColumn,
   onDeleteColumn,
+  onOpenMomentum,
   onRenameColumn,
   onReorderColumn,
   onRestoreColumn,
@@ -6576,6 +6723,7 @@ function BoardView({
   onTaskStatusChange,
   onToggleTag,
   progressPercent,
+  momentumDays,
   projectTasks,
   searchQuery,
   selectedTags,
@@ -6595,6 +6743,7 @@ function BoardView({
   onAddTask: (status: TaskStatus) => void;
   onArchiveColumn: (columnId: string) => void;
   onDeleteColumn: (columnId: string) => void;
+  onOpenMomentum: () => void;
   onRenameColumn: (columnId: string, title: string) => void;
   onReorderColumn: (sourceColumnId: string, targetColumnId: string) => void;
   onRestoreColumn: (columnId: string) => void;
@@ -6608,6 +6757,7 @@ function BoardView({
   ) => void;
   onToggleTag: (tag: string) => void;
   progressPercent: number;
+  momentumDays: MomentumDay[];
   projectTasks: Task[];
   searchQuery: string;
   selectedTags: string[];
@@ -6773,26 +6923,72 @@ function BoardView({
 
   return (
     <div className="space-y-6">
-      <section className="rounded-lg border border-[var(--accent-border)] bg-[var(--accent-soft)] p-4 text-[var(--foreground)]">
-        <div className="flex flex-wrap items-center gap-4">
-          <Gauge
-            className="shrink-0 text-[var(--accent)]"
-            size={28}
-            aria-hidden="true"
-          />
-          <div className="min-w-32">
-            <p className="text-xs font-semibold uppercase text-[var(--danger)]">
-              Daily focus
-            </p>
-            <p className="mt-1 text-xl font-semibold">
-              {todaysPomodoros}/{activeGoal} sessions
-            </p>
+      <section className="overflow-hidden rounded-xl border border-[var(--accent-border)] bg-[var(--accent-soft)] text-[var(--foreground)] shadow-[var(--shadow-accent-soft)]">
+        <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[minmax(240px,0.7fr)_minmax(420px,1.3fr)] lg:items-center">
+          <div className="flex items-center gap-4">
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[var(--surface)] text-[var(--accent)] shadow-sm">
+              <Gauge size={24} aria-hidden="true" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--danger)]">
+                    Today&apos;s momentum
+                  </p>
+                  <p className="mt-1 text-xl font-semibold">
+                    {todaysPomodoros}/{activeGoal} sessions
+                  </p>
+                </div>
+                <span className="text-sm font-bold text-[var(--danger)]">
+                  {Math.round(progressPercent)}%
+                </span>
+              </div>
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-[var(--surface)]">
+                <div
+                  className="h-full rounded-full bg-[var(--accent)] transition-[width]"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+            </div>
           </div>
-          <div className="h-2 min-w-40 flex-1 overflow-hidden rounded-full bg-[var(--surface)]">
-            <div
-              className="h-full rounded-full bg-[var(--accent)]"
-              style={{ width: `${progressPercent}%` }}
-            />
+
+          <div className="rounded-xl border border-[var(--accent-border)] bg-[var(--surface-translucent)] p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">This week</p>
+                <p className="mt-0.5 text-xs text-[var(--muted)]">
+                  Showing up matters more than raw hours.
+                </p>
+              </div>
+              <button
+                className="rounded-md px-2 py-1 text-xs font-semibold text-[var(--danger)] transition hover:bg-[var(--accent-soft)]"
+                type="button"
+                onClick={onOpenMomentum}
+              >
+                Open momentum
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-7 gap-2">
+              {momentumDays.map((day) => (
+                <div key={day.key} className="text-center">
+                  <div
+                    aria-label={`${day.label}: ${momentumStatusLabel(day.status)}, ${day.sessions} sessions`}
+                    className={`relative mx-auto flex h-8 w-8 items-center justify-center rounded-lg border text-xs font-bold ${momentumCellClass(day.status)} ${
+                      day.isToday ? "ring-2 ring-[var(--foreground)] ring-offset-2 ring-offset-[var(--surface)]" : ""
+                    }`}
+                    role="img"
+                  >
+                    {day.sessions || (day.status === "future" ? "·" : "")}
+                    {day.completedTasks ? (
+                      <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-current" />
+                    ) : null}
+                  </div>
+                  <p className="mt-1.5 text-[11px] font-semibold text-[var(--muted)]">
+                    {day.date.toLocaleDateString("en", { weekday: "narrow" })}
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -8691,6 +8887,7 @@ function AnalyticsView({
   const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
   const [projectFilterId, setProjectFilterId] = useState<"all" | string>("all");
   const [selectedAnalyticsTags, setSelectedAnalyticsTags] = useState<string[]>([]);
+  const [selectedMomentumKey, setSelectedMomentumKey] = useState("");
   const trackedFocusScoreRef = useRef("");
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -8782,6 +8979,12 @@ function AnalyticsView({
     0,
   );
   const dailyAverage = rangeSessions.length / rangeDays;
+  const activeRangeDays = new Set(
+    rangeSessions.map((session) => dateKey(session.completedAt)),
+  ).size;
+  const rangeCompletedCount = visibleTasks.filter(
+    (task) => task.completedAt && new Date(task.completedAt) >= rangeStart,
+  ).length;
   const completedCount = visibleTasks.filter(
     (task) => task.status === "done",
   ).length;
@@ -8870,12 +9073,26 @@ function AnalyticsView({
     analyticsSessions.map((session) => dateKey(session.completedAt)),
   );
   const streakCursor = new Date(today);
-  if (!activityDays.has(dateKey(streakCursor))) {
-    streakCursor.setDate(streakCursor.getDate() - 1);
-  }
   let focusStreak = 0;
-  while (activityDays.has(dateKey(streakCursor))) {
-    focusStreak += 1;
+  let inspectedPlannedDays = 0;
+  const streakWorkingDays = settings.workingDays.length
+    ? settings.workingDays
+    : weekdays;
+  while (inspectedPlannedDays < 366) {
+    const weekday = streakCursor.toLocaleDateString("en", { weekday: "short" });
+    const planned = streakWorkingDays.includes(weekday);
+    const key = dateKey(streakCursor);
+    const isCurrentDay = key === dateKey(today);
+
+    if (planned) {
+      inspectedPlannedDays += 1;
+      if (activityDays.has(key)) {
+        focusStreak += 1;
+      } else if (!isCurrentDay) {
+        break;
+      }
+    }
+
     streakCursor.setDate(streakCursor.getDate() - 1);
   }
 
@@ -8890,9 +9107,7 @@ function AnalyticsView({
 
   const lastSeven = Array.from({ length: 7 }, (_, index) => {
     const day = new Date(today);
-    const dayOfWeek = day.getDay();
-    const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    day.setDate(day.getDate() - daysToMonday + index);
+    day.setDate(day.getDate() - (6 - index));
     return {
       key: dateKey(day),
       label: day.toLocaleDateString("en", { weekday: "short" }),
@@ -8947,11 +9162,16 @@ function AnalyticsView({
           hour: "numeric",
         })}`;
 
-  const heatmapDays = buildRecentActivityDates(today).map((day) => ({
-    date: day,
-    minutes: sessionMinutesByDay.get(dateKey(day)) ?? 0,
-  }));
-  const heatmapMax = Math.max(1, ...heatmapDays.map((day) => day.minutes));
+  const heatmapDays = buildMomentumDays({
+    dates: buildRecentActivityDates(today),
+    sessions: analyticsSessions,
+    settings,
+    tasks: visibleTasks,
+    today,
+  });
+  const selectedMomentumDay =
+    heatmapDays.find((day) => day.key === selectedMomentumKey) ??
+    heatmapDays.at(-1)!;
 
   const cancellationCounts = (
     Object.keys(cancellationReasonLabels) as CancellationReason[]
@@ -8980,15 +9200,17 @@ function AnalyticsView({
           <p className="text-xs font-semibold uppercase text-[var(--danger)]">
             {analyticsScopeLabel}
           </p>
-          <h2 className="mt-1 text-3xl font-bold">Focus insights</h2>
-          <p className="mt-2 text-sm text-[var(--muted)]">{rangeLabel}</p>
+          <h2 className="mt-1 text-3xl font-bold">Your momentum</h2>
+          <p className="mt-2 text-sm text-[var(--muted)]">
+            See the rhythm first, then inspect what changed it.
+          </p>
         </div>
         <div className="flex flex-col gap-2 sm:items-end">
           <label className="flex h-10 w-full items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm text-[var(--muted)] sm:w-auto">
             <FolderKanban size={16} aria-hidden="true" />
-            <span className="sr-only">Analytics project</span>
+            <span className="sr-only">Momentum project</span>
             <select
-              aria-label="Analytics project"
+              aria-label="Momentum project"
               className="min-w-0 bg-transparent font-semibold text-[var(--foreground)] outline-none"
               value={effectiveProjectFilterId}
               onChange={(event) => setProjectFilterId(event.target.value)}
@@ -9002,7 +9224,7 @@ function AnalyticsView({
             </select>
           </label>
           <div
-            aria-label="Analytics date range"
+            aria-label="Detailed insights date range"
             className="flex w-fit rounded-md border border-[var(--border)] bg-[var(--surface)] p-1"
             role="group"
           >
@@ -9022,6 +9244,7 @@ function AnalyticsView({
               </button>
             ))}
           </div>
+          <p className="text-xs text-[var(--muted)]">Detailed insights · {rangeLabel}</p>
         </div>
       </header>
 
@@ -9029,7 +9252,7 @@ function AnalyticsView({
         <section className="flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
           <div className="flex items-center gap-2 pr-1 text-sm font-semibold text-[var(--muted)]">
             <Hash size={16} aria-hidden="true" />
-            Analytics filter
+            Momentum filter
           </div>
           {scopedTags.map((tag) => {
             const active = activeAnalyticsTags.includes(tag);
@@ -9058,6 +9281,127 @@ function AnalyticsView({
         </section>
       ) : null}
 
+      <section className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)]">
+        <div className="grid gap-6 p-5 sm:p-6 xl:grid-cols-[minmax(0,1fr)_260px] xl:p-7">
+          <div className="min-w-0">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.09em] text-[var(--danger)]">
+                  Last 26 weeks
+                </p>
+                <h3 className="mt-1 text-2xl font-semibold">The rhythm of showing up</h3>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
+                  Colour represents commitment, not hours. A strong cell means you
+                  reached the daily goal; a soft cell means you still showed up.
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 text-xs font-semibold text-[var(--muted)]">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-3 w-3 rounded-[3px] bg-[var(--surface-hover)]" /> Rest
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-3 w-3 rounded-[3px] border border-[var(--border-strong)] bg-[var(--surface)]" /> Missed
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-3 w-3 rounded-[3px] bg-[var(--accent-soft-hover)]" /> Showed up
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-3 w-3 rounded-[3px] bg-[var(--accent)]" /> Hit goal
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-7 overflow-x-auto pb-2">
+              <div
+                aria-label="Twenty-six week focus momentum graph"
+                className="grid w-max grid-flow-col grid-rows-7 gap-1.5"
+                role="grid"
+              >
+                {heatmapDays.map((day) => (
+                  <button
+                    key={day.key}
+                    aria-label={`${day.label}: ${momentumStatusLabel(day.status)}, ${day.sessions} sessions, ${day.completedTasks} cards finished`}
+                    aria-selected={selectedMomentumDay.key === day.key}
+                    className={`relative h-5 w-5 rounded-[5px] border transition hover:scale-110 focus:outline-none focus:ring-2 focus:ring-[var(--accent)] focus:ring-offset-2 ${momentumCellClass(day.status)} ${
+                      selectedMomentumDay.key === day.key
+                        ? "ring-2 ring-[var(--foreground)] ring-offset-2 ring-offset-[var(--surface)]"
+                        : ""
+                    }`}
+                    role="gridcell"
+                    type="button"
+                    onClick={() => setSelectedMomentumKey(day.key)}
+                  >
+                    {day.completedTasks ? (
+                      <span className="absolute right-0.5 top-0.5 h-1 w-1 rounded-full bg-current" />
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-[var(--border)] pt-5">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${momentumCellClass(selectedMomentumDay.status)}`}>
+                  {selectedMomentumDay.sessions}
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{selectedMomentumDay.label}</p>
+                  <p className="mt-0.5 text-sm text-[var(--muted)]">
+                    {momentumStatusLabel(selectedMomentumDay.status)}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2 text-sm">
+                <span className="rounded-full bg-[var(--surface-muted)] px-3 py-1.5 font-semibold">
+                  {selectedMomentumDay.sessions} sessions
+                </span>
+                <span className="rounded-full bg-[var(--surface-muted)] px-3 py-1.5 font-semibold">
+                  {selectedMomentumDay.completedTasks} cards finished
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <aside className="rounded-2xl bg-[var(--foreground)] p-5 text-[var(--background)]">
+            <p className="text-xs font-semibold uppercase tracking-[0.09em] opacity-60">
+              Rolling seven days
+            </p>
+            {focusScore.unlocked ? (
+              <>
+                <div className="mt-4 text-6xl font-bold tracking-[-0.05em]">
+                  {focusScore.score}
+                </div>
+                <p className="mt-2 text-lg font-semibold">{focusScore.band?.label}</p>
+                <p className="mt-1 text-sm opacity-65">
+                  {focusScoreTrend.delta === null
+                    ? "Your first complete score window."
+                    : `${focusScoreTrend.delta >= 0 ? "+" : ""}${focusScoreTrend.delta} versus the prior week`}
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="mt-4 text-5xl font-bold tracking-[-0.04em]">
+                  {focusScore.daysUntilUnlock}
+                </div>
+                <p className="mt-2 text-lg font-semibold">
+                  {focusScore.daysUntilUnlock === 1 ? "active day" : "active days"} to unlock
+                </p>
+                <p className="mt-2 text-sm leading-6 opacity-65">
+                  The number stays hidden until there is enough rhythm to make it useful.
+                </p>
+              </>
+            )}
+            <div className="mt-6 border-t border-white/15 pt-5">
+              <p className="text-sm font-semibold">Planned-day streak</p>
+              <p className="mt-1 text-3xl font-bold">{focusStreak} days</p>
+              <p className="mt-2 text-sm leading-6 opacity-65">
+                Rest days are skipped, so taking one never breaks the chain.
+              </p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={Clock3}
@@ -9067,27 +9411,21 @@ function AnalyticsView({
         />
         <MetricCard
           icon={BarChart3}
-          label="Daily average"
+          label="Active days"
           tone="green"
-          value={`${dailyAverage.toFixed(1)} sessions`}
+          value={`${activeRangeDays} ${activeRangeDays === 1 ? "day" : "days"}`}
         />
         <MetricCard
           icon={Gauge}
-          label="Focus streak"
+          label="Sessions per day"
           tone="amber"
-          value={`${focusStreak} ${focusStreak === 1 ? "day" : "days"}`}
+          value={dailyAverage.toFixed(1)}
         />
         <MetricCard
           icon={CheckCircle2}
-          label="Focus score"
+          label="Cards finished"
           tone="ink"
-          value={
-            focusScore.unlocked
-              ? `${focusScore.score} / 100`
-              : `${focusScore.daysUntilUnlock} ${
-                  focusScore.daysUntilUnlock === 1 ? "day" : "days"
-                } to unlock`
-          }
+          value={`${rangeCompletedCount}`}
         />
       </section>
 
@@ -9098,35 +9436,19 @@ function AnalyticsView({
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase text-[var(--danger)]">
-              Rolling 7-day score
+              What moved the score
             </p>
             <h3 id="focus-score-title" className="mt-1 text-xl font-semibold">
-              Did you do the work you planned?
+              Four behaviours you can actually change
             </h3>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--muted)]">
               Your Focus Score rewards showing up on working days, reaching your
               session goal, finishing cards, and following sessions through.
             </p>
           </div>
-          {focusScore.unlocked ? (
-            <div className="shrink-0 text-left sm:text-right">
-              <div className="text-4xl font-bold">{focusScore.score}</div>
-              <p className="mt-1 text-sm font-semibold text-[var(--green-strong)]">
-                {focusScore.band?.label}
-                {focusScoreTrend.delta === null
-                  ? ""
-                  : ` · ${focusScoreTrend.delta >= 0 ? "+" : ""}${
-                      focusScoreTrend.delta
-                    } vs prior week`}
-              </p>
-            </div>
-          ) : (
-            <div className="max-w-xs rounded-md bg-[var(--surface-muted)] px-4 py-3 text-sm text-[var(--muted)]">
-              Complete a session on {focusScore.daysUntilUnlock} more active{" "}
-              {focusScore.daysUntilUnlock === 1 ? "day" : "days"} to reveal your
-              score.
-            </div>
-          )}
+          <div className="max-w-xs rounded-md bg-[var(--surface-muted)] px-4 py-3 text-sm text-[var(--muted)]">
+            Score window: {focusScore.window.from} to {focusScore.window.to}
+          </div>
         </div>
 
         {focusScore.unlocked ? (
@@ -9179,7 +9501,7 @@ function AnalyticsView({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-                Weekly distribution
+                Last 7 days
               </p>
               <h3 className="mt-1 text-xl font-semibold">Focus minutes by day</h3>
             </div>
@@ -9282,56 +9604,6 @@ function AnalyticsView({
           </div>
         </section>
       </div>
-
-      <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase text-[var(--muted)]">
-              Last 26 weeks
-            </p>
-            <h3 className="mt-1 text-xl font-semibold">Focus intensity map</h3>
-          </div>
-          <div className="flex items-center gap-1 text-[10px] font-semibold uppercase text-[var(--muted)]">
-            <span className="mr-1">Less</span>
-            {[0, 0.25, 0.5, 0.75, 1].map((intensity) => (
-              <span
-                key={intensity}
-                className="h-3 w-3 rounded-[2px]"
-                style={{
-                  backgroundColor:
-                    intensity === 0
-                      ? "var(--heat-empty)"
-                      : `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`,
-                }}
-              />
-            ))}
-            <span className="ml-1">More</span>
-          </div>
-        </div>
-
-        <div className="mt-5 overflow-x-auto pb-1">
-          <div className="grid w-max grid-flow-col grid-rows-7 gap-1">
-            {heatmapDays.map((day) => {
-              const intensity = day.minutes / heatmapMax;
-              return (
-                <span
-                  key={dateKey(day.date)}
-                  className="h-3 w-3 rounded-[2px]"
-                  style={{
-                    backgroundColor: day.minutes
-                      ? `rgba(255, 0, 94, ${0.2 + intensity * 0.8})`
-                      : "var(--heat-empty)",
-                  }}
-                  title={`${day.date.toLocaleDateString("en", {
-                    month: "short",
-                    day: "numeric",
-                  })}: ${day.minutes} focus minutes`}
-                />
-              );
-            })}
-          </div>
-        </div>
-      </section>
 
       <section className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

@@ -96,9 +96,10 @@ async function runSmoke() {
     await waitForServer(baseUrl, () => output, () => exited);
 
     const homeHtml = await fetchText(baseUrl, "/");
-    assert.match(homeHtml, /Find out your focus score/);
-    assert.match(homeHtml, /Reveal my focus score/);
-    assert.match(homeHtml, /Rest days never count against you/);
+    assert.match(homeHtml, /Get on a roll/);
+    assert.match(homeHtml, /Interactive mini Kanban board/);
+    assert.match(homeHtml, /Start focus timer/);
+    assert.match(homeHtml, /Kanban and timer together/);
     assert.match(homeHtml, /Privacy/);
     assert.match(homeHtml, /Terms/);
 

@@ -15,7 +15,7 @@ const siteUrl = getSiteUrl();
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "Tockli - Focus timer and task board",
+    default: "Tockli - Kanban board with a focus timer",
     template: "%s | Tockli",
   },
   description: siteConfig.description,
@@ -27,13 +27,15 @@ export const metadata: Metadata = {
     "deep work",
     "productivity app",
     "focus analytics",
+    "focus momentum",
+    "habit tracker for work",
   ],
   openGraph: {
-    title: "Tockli - Focus timer and task board",
+    title: "Tockli - Kanban board with a focus timer",
     description: siteConfig.description,
     images: [
       {
-        alt: "Tockli task board and daily focus progress.",
+        alt: "Tockli Kanban board with a focus timer and momentum graph.",
         height: 720,
         url: siteConfig.ogImage,
         width: 1280,
@@ -45,7 +47,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Tockli - Focus timer and task board",
+    title: "Tockli - Kanban board with a focus timer",
     description: siteConfig.description,
     images: [siteConfig.ogImage],
   },

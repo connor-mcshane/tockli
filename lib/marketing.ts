@@ -14,7 +14,7 @@ export const siteConfig = {
   name: "Tockli",
   url: resolveSiteUrl(process.env.NEXT_PUBLIC_SITE_URL),
   description:
-    "Tockli is a task board with a focus timer built in. Run focus sessions, finish cards, and find out your focus score.",
+    "A simple Kanban board with a Pomodoro timer built in. Finish focus sessions, move cards to done, and see your productivity grow with Tockli.",
   ogImage: "/og.png",
 };
 

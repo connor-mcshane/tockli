@@ -5,13 +5,13 @@ import LandingPageClient from "./landing/LandingPageClient";
 const siteUrl = getSiteUrl();
 
 export const metadata: Metadata = {
-  title: "Tockli - Focus timer and task board",
+  title: "Tockli - Kanban board with a focus timer",
   description: siteConfig.description,
   alternates: {
     canonical: "/",
   },
   openGraph: {
-    title: "Tockli - Focus timer and task board",
+    title: "Tockli - Kanban board with a focus timer",
     description: siteConfig.description,
     images: ["/og.png"],
     url: "/",
