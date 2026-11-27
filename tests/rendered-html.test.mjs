@@ -111,7 +111,7 @@ test("server-renders launch marketing routes", async () => {
   const articleHtml = await article.text();
   assert.match(articleHtml, /A timer solves the second problem/);
   assert.match(articleHtml, /By Tockli/);
-  assert.match(articleHtml, /pomodoro-task-board\.jpg/);
+  assert.match(articleHtml, /tockli-board-timer\.jpg/);
   assert.match(articleHtml, /application\/ld\+json/);
   assert.match(articleHtml, /Keep reading/);
 
