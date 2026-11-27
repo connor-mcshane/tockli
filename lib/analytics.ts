@@ -44,6 +44,8 @@ export type TockliEventName =
   | "focus_score_viewed"
   | "focus_score_unlocked"
   | "focus_score_estimated"
+  | "landing_momentum_demo_used"
+  | "landing_product_demo_used"
   | "streak_extended"
   | "streak_broken"
   | "streak_freeze_used"

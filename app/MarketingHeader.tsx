@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Menu, TimerReset } from "lucide-react";
+import { Menu, TimerReset } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { trackEvent } from "@/lib/analytics";
@@ -58,12 +58,11 @@ export default function MarketingHeader() {
             );
           })}
           <Link
-            className="flex h-10 items-center gap-2 rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
+            className="flex h-10 items-center rounded-md bg-[#ff005e] px-4 text-sm font-semibold text-white transition hover:bg-[#e00054]"
             href="/signup"
             onClick={() => trackNavigation("get_started", "/signup")}
           >
             Get started for free
-            <ArrowRight size={16} aria-hidden="true" />
           </Link>
         </nav>
 
@@ -87,12 +86,11 @@ export default function MarketingHeader() {
               </Link>
             ))}
             <Link
-              className="mt-1 flex h-11 items-center justify-center gap-2 rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white"
+              className="mt-1 flex h-11 items-center justify-center rounded-md bg-[#ff005e] px-3 text-sm font-semibold text-white"
               href="/signup"
               onClick={() => trackNavigation("get_started", "/signup")}
             >
               Get started for free
-              <ArrowRight size={16} aria-hidden="true" />
             </Link>
           </nav>
         </details>
